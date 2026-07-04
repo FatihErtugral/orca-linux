@@ -61,6 +61,7 @@ mod tests {
             running: 0,
             open: 1,
             prefs: NotificationPreferences::default(),
+            version: "0.0.0".into(),
         };
         let line = serde_json::to_string(&state).unwrap();
         assert!(!line.contains('\n'));
