@@ -252,6 +252,11 @@ fn toggle_popup(shared: &Option<Arc<SharedUi>>) {
     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(show));
     if show {
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        // Dock above the tray corner once the surface is mapped.
+        thread::spawn(|| {
+            thread::sleep(Duration::from_millis(120));
+            focus::position_popup_bottom_right();
+        });
     }
     ctx.request_repaint();
 }

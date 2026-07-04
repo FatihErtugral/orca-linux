@@ -85,7 +85,38 @@ if (found) {{
 }}
 "#
     );
-    let path = std::env::temp_dir().join(format!("orca-focus-{}.js", std::process::id()));
+    run_script_text("focus", &script)
+}
+
+/// Move our own popup window to the bottom-right of the work area, docked
+/// above the panel like a Plasma applet. Wayland clients cannot position
+/// their own windows, but a KWin script can.
+pub fn position_popup_bottom_right() {
+    let pid = std::process::id();
+    let script = format!(
+        r#"
+var wins = workspace.windowList ? workspace.windowList() : workspace.clientList;
+for (var i = 0; i < wins.length; i++) {{
+    var w = wins[i];
+    if (w.pid === {pid} && w.normalWindow) {{
+        var area = workspace.clientArea(KWin.PlacementArea, w);
+        var g = w.frameGeometry;
+        w.frameGeometry = {{
+            x: area.x + area.width - g.width - 8,
+            y: area.y + area.height - g.height - 8,
+            width: g.width,
+            height: g.height
+        }};
+        break;
+    }}
+}}
+"#
+    );
+    run_script_text("position", &script);
+}
+
+fn run_script_text(kind: &str, script: &str) -> bool {
+    let path = std::env::temp_dir().join(format!("orca-{kind}-{}.js", std::process::id()));
     if fs::write(&path, script).is_err() {
         return false;
     }

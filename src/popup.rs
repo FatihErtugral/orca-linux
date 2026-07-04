@@ -137,9 +137,12 @@ impl eframe::App for PopupApp {
 
         let state = self.shared.state.lock().unwrap().clone();
         let mut focus_clicked = false;
+        // No shadow: it would paint outside the rounded rect and show up as a
+        // dark protrusion at the window edge (the surface itself is square).
         let panel_frame = egui::Frame::window(ui.style())
             .corner_radius(12.0)
-            .inner_margin(14.0);
+            .inner_margin(14.0)
+            .shadow(egui::Shadow::NONE);
         egui::CentralPanel::default()
             .frame(panel_frame)
             .show(ui, |ui| {
@@ -204,6 +207,9 @@ impl PopupApp {
                     .id_salt(&row.id)
                     .sense(egui::Sense::click()),
                 |ui| {
+                    // Claim the full row width so the whole line is clickable,
+                    // not just the rect the text happens to occupy.
+                    ui.set_min_width(ui.available_width());
                     self.agent_row_contents(ui, row, now);
                 },
             )
@@ -252,11 +258,7 @@ impl PopupApp {
             });
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                if ui
-                    .add(egui::Button::new(egui::RichText::new("✕").size(11.0)).frame(false))
-                    .on_hover_text("Dismiss")
-                    .clicked()
-                {
+                if close_button(ui).on_hover_text("Dismiss").clicked() {
                     let _ = self.tx.send(Msg::Dismiss(row.id.clone()));
                 }
             });
@@ -312,7 +314,7 @@ impl PopupApp {
                 ui.label(label);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let mut on = value;
-                    if ui.checkbox(&mut on, "").changed() {
+                    if toggle_switch(ui, &mut on).changed() {
                         let _ = self.tx.send(Msg::SetPref(key, on));
                         // Optimistic local echo so the pane reacts instantly;
                         // the store loop pushes the canonical state right after.
@@ -359,6 +361,55 @@ impl PopupApp {
             }
         }
     }
+}
+
+/// iOS/Plasma-style animated toggle switch (the canonical egui custom widget);
+/// the default font has no switch, and checkboxes read as foreign here.
+fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let desired_size = egui::vec2(30.0, 16.0);
+    let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    if ui.is_rect_visible(rect) {
+        let how_on = ui.ctx().animate_bool_responsive(response.id, *on);
+        let visuals = ui.style().interact_selectable(&response, *on);
+        let rect = rect.expand(visuals.expansion);
+        let radius = 0.5 * rect.height();
+        ui.painter().rect(
+            rect,
+            radius,
+            visuals.bg_fill,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+        let circle_x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), how_on);
+        ui.painter().circle(
+            egui::pos2(circle_x, rect.center().y),
+            0.75 * radius,
+            visuals.fg_stroke.color,
+            visuals.fg_stroke,
+        );
+    }
+    response
+}
+
+/// A small "✕", drawn with the painter — the bundled fonts lack the glyph
+/// (it rendered as a placeholder box).
+fn close_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        let r = 3.5;
+        let c = rect.center();
+        let stroke = egui::Stroke::new(1.4, visuals.fg_stroke.color);
+        ui.painter()
+            .line_segment([c + egui::vec2(-r, -r), c + egui::vec2(r, r)], stroke);
+        ui.painter()
+            .line_segment([c + egui::vec2(r, -r), c + egui::vec2(-r, r)], stroke);
+    }
+    response
 }
 
 fn apply_local(prefs: &mut NotificationPreferences, key: PrefKey, value: bool) {
