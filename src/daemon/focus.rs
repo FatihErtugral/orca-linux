@@ -110,7 +110,7 @@ if (found) {{
 /// Move our own popup window to the bottom-right of the work area, docked
 /// above the panel like a Plasma applet. Wayland clients cannot position
 /// their own windows, but a KWin script can.
-pub fn position_popup_bottom_right() {
+pub fn position_popup_bottom_right() -> bool {
     let pid = std::process::id();
     let script = format!(
         r#"
@@ -118,12 +118,13 @@ var wins = workspace.windowList ? workspace.windowList() : workspace.clientList;
 for (var i = 0; i < wins.length; i++) {{
     var w = wins[i];
     if (w.pid === {pid} && w.normalWindow) {{
-        // Behave like a Plasma applet popup: no taskbar/switcher entry,
-        // stays above other windows.
-        w.skipTaskbar = true;
-        w.skipSwitcher = true;
-        w.skipPager = true;
-        w.keepAbove = true;
+        // The installed KWin rule normally forces these; only write them as
+        // a fallback when the rule is absent — property writes can shuffle
+        // focus, and a freshly mapped popup must not lose it.
+        if (!w.skipTaskbar) {{ w.skipTaskbar = true; }}
+        if (!w.skipSwitcher) {{ w.skipSwitcher = true; }}
+        if (!w.skipPager) {{ w.skipPager = true; }}
+        if (!w.keepAbove) {{ w.keepAbove = true; }}
         var area = workspace.clientArea(KWin.PlacementArea, w);
         var g = w.frameGeometry;
         w.frameGeometry = {{
@@ -132,12 +133,16 @@ for (var i = 0; i < wins.length; i++) {{
             width: g.width,
             height: g.height
         }};
+        // Scripts are exempt from focus-stealing prevention: activating here
+        // settles the focus KWin sometimes reverts after the client-side map.
+        if (workspace.activeWindow !== undefined) {{ workspace.activeWindow = w; }}
+        else {{ workspace.activeClient = w; }}
         break;
     }}
 }}
 "#
     );
-    run_script_text("position", &script);
+    run_script_text("position", &script)
 }
 
 fn run_script_text(kind: &str, script: &str) -> bool {

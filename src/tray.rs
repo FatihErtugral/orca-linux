@@ -36,16 +36,10 @@ struct AgentRow {
 
 pub struct OrcaTray {
     model: Model,
+    /// Pre-composed ARGB icon (dolphin + running/open corner badge); rebuilt
+    /// only when the model changes.
+    icon: Vec<u8>,
     tx: Sender<Msg>,
-}
-
-impl OrcaTray {
-    fn attention(&self) -> bool {
-        self.model
-            .rows
-            .iter()
-            .any(|r| matches!(r.status, AgentStatus::Waiting | AgentStatus::Error))
-    }
 }
 
 impl ksni::Tray for OrcaTray {
@@ -72,11 +66,11 @@ impl ksni::Tray for OrcaTray {
     }
 
     fn icon_pixmap(&self) -> Vec<Icon> {
-        vec![icon(if self.attention() {
-            ICON_ATTENTION
-        } else {
-            ICON_NORMAL
-        })]
+        vec![Icon {
+            width: ICON_SIZE,
+            height: ICON_SIZE,
+            data: self.icon.clone(),
+        }]
     }
 
     fn attention_icon_pixmap(&self) -> Vec<Icon> {
@@ -234,13 +228,33 @@ impl Handle {
             }
             *last = model.clone();
         }
-        let _ = self.inner.update(move |tray| tray.model = model);
+        let icon = compose_icon(&model);
+        let _ = self.inner.update(move |tray| {
+            tray.model = model;
+            tray.icon = icon;
+        });
     }
+}
+
+/// The macOS status-item design: attention swaps the palette to orange, and
+/// open sessions add the framed `running/open` counter.
+fn compose_icon(model: &Model) -> Vec<u8> {
+    let attention = model
+        .rows
+        .iter()
+        .any(|r| matches!(r.status, AgentStatus::Waiting | AgentStatus::Error));
+    let (base, color) = if attention {
+        (ICON_ATTENTION, (0xFF, 0x9F, 0x0A))
+    } else {
+        (ICON_NORMAL, (0xE8, 0xE8, 0xE8))
+    };
+    crate::badge::compose(base, model.running, model.open, color)
 }
 
 pub fn spawn(tx: Sender<Msg>) -> Result<Handle, String> {
     let tray = OrcaTray {
         model: Model::default(),
+        icon: ICON_NORMAL.to_vec(),
         tx,
     };
     let inner = tray.spawn().map_err(|e| e.to_string())?;

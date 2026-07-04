@@ -1,6 +1,6 @@
 [package]
 name = "orca"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Tray status tracker for CLI AI agents — Linux port of Orca for macOS"
 license = "PolyForm-Noncommercial-1.0.0"

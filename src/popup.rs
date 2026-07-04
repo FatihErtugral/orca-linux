@@ -85,21 +85,14 @@ pub fn run_popup() -> i32 {
             cc.egui_ctx
                 .all_styles_mut(|style| style.interaction.selectable_labels = false);
             let _ = app_shared.ctx.set(cc.egui_ctx.clone());
-            // Dock at the tray corner as soon as KWin has mapped the surface;
-            // retries make this robust against slow compositors.
-            std::thread::spawn(|| {
-                for delay in [30_u64, 120, 300] {
-                    std::thread::sleep(Duration::from_millis(delay));
-                    crate::daemon::focus::position_popup_bottom_right();
-                }
-            });
             Ok(Box::new(PopupApp {
                 shared: app_shared,
                 socket_path,
                 show_settings: false,
                 was_focused: false,
                 closing: false,
-                opened_at: std::time::Instant::now(),
+                frames: 0,
+                armed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 check: Arc::new(Mutex::new(CheckState::Idle)),
             }))
         }),
@@ -132,7 +125,11 @@ struct PopupApp {
     show_settings: bool,
     was_focused: bool,
     closing: bool,
-    opened_at: std::time::Instant,
+    /// Frames rendered so far — drives the event-based positioning pass.
+    frames: u32,
+    /// Set once positioning (which also settles focus via KWin) completed;
+    /// only then may focus loss close the popup. Event-driven, no clocks.
+    armed: Arc<std::sync::atomic::AtomicBool>,
     check: Arc<Mutex<CheckState>>,
 }
 
@@ -146,14 +143,6 @@ impl PopupApp {
             return;
         }
         self.closing = true;
-        // Tell the daemon first so a tray click racing with this close does
-        // not instantly reopen the popup.
-        self.send(Action {
-            action: "popup_hidden".into(),
-            id: None,
-            key: None,
-            value: None,
-        });
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 }
@@ -165,14 +154,39 @@ impl eframe::App for PopupApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+
+        // Dock at the tray corner, driven by frame events rather than timers:
+        // frame 1 renders into the surface being mapped, frame 2 is
+        // compositor-synced after the map, so KWin knows the window by then.
+        // The script is idempotent; two passes cover both orderings. The
+        // second pass also activates the window via KWin and arms the
+        // focus-loss close below.
+        if self.frames < 2 {
+            self.frames += 1;
+            let last_pass = self.frames == 2;
+            let armed = self.armed.clone();
+            let repaint = ctx.clone();
+            std::thread::spawn(move || {
+                crate::daemon::focus::position_popup_bottom_right();
+                if last_pass {
+                    armed.store(true, std::sync::atomic::Ordering::Relaxed);
+                    repaint.request_repaint();
+                }
+            });
+            ctx.request_repaint();
+        }
+
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.close(&ctx);
         }
-        // Close like a popover: on the transition from focused to unfocused.
-        // The first moments after mapping are ignored — KWin briefly shuffles
-        // focus while placing the window, which must not read as click-away.
+        // Close like a popover: on the transition from focused to unfocused —
+        // but only after positioning settled the initial focus, so compositor
+        // shuffle during mapping can never read as click-away.
         let focused = ctx.input(|i| i.focused);
-        if self.was_focused && !focused && self.opened_at.elapsed() > Duration::from_millis(600) {
+        if focused != self.was_focused {
+            log::debug!("focus transition: {} -> {focused}", self.was_focused);
+        }
+        if self.was_focused && !focused && self.armed.load(std::sync::atomic::Ordering::Relaxed) {
             self.close(&ctx);
         }
         self.was_focused = focused;

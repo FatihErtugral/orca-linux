@@ -28,7 +28,6 @@ pub enum Msg {
     Dismiss(String),
     Focus(String),
     SetPref(PrefKey, bool),
-    PopupHidden,
     TogglePopup,
     Quit,
 }
@@ -67,10 +66,6 @@ impl PrefKey {
 
 const TICK: Duration = Duration::from_secs(1);
 const MAINTENANCE_EVERY: u64 = 3; // seconds, mirroring the macOS 3s timer
-
-/// A toggle arriving right after the popup hid itself (focus loss when the
-/// user clicks the tray icon) means "close", not "reopen".
-const REOPEN_GRACE: Duration = Duration::from_millis(400);
 
 pub fn run(argv: &[String]) -> i32 {
     let parsed = args::parse(argv);
@@ -195,7 +190,6 @@ pub fn run(argv: &[String]) -> i32 {
                     false,
                 );
             }
-            Ok(Msg::PopupHidden) => popup.mark_hidden(),
             Ok(Msg::TogglePopup) => popup.toggle(),
             Ok(Msg::Quit) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -233,18 +227,18 @@ fn map_action(action: Action) -> Option<Msg> {
             let key = PrefKey::parse(action.key.as_deref()?)?;
             Some(Msg::SetPref(key, action.value?))
         }
-        "popup_hidden" => Some(Msg::PopupHidden),
         _ => None,
     }
 }
 
 /// The popover lives in its own short-lived process: window lifetime equals
 /// visibility, which sidesteps Wayland's unsupported hide/show entirely and
-/// keeps the daemon free of any GL/UI footprint.
+/// keeps the daemon free of any GL/UI footprint. Toggling is deterministic
+/// process ownership — child alive means close it, otherwise open one; no
+/// clocks, no grace windows.
 #[derive(Default)]
 struct PopupProcess {
     child: Option<Child>,
-    hidden_at: Option<Instant>,
 }
 
 impl PopupProcess {
@@ -253,11 +247,6 @@ impl PopupProcess {
         if self.child.is_some() {
             self.terminate();
             return;
-        }
-        if let Some(hidden) = self.hidden_at.take() {
-            if hidden.elapsed() < REOPEN_GRACE {
-                return; // the click that closed it must not reopen it
-            }
         }
         let Ok(exe) = std::env::current_exe() else {
             return;
@@ -272,10 +261,6 @@ impl PopupProcess {
             Ok(child) => self.child = Some(child),
             Err(error) => log::warn!("could not launch popup: {error}"),
         }
-    }
-
-    fn mark_hidden(&mut self) {
-        self.hidden_at = Some(Instant::now());
     }
 
     fn reap(&mut self) {

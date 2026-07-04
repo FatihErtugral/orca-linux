@@ -1,4 +1,5 @@
 mod args;
+mod badge;
 mod cli;
 mod daemon;
 mod paths;
