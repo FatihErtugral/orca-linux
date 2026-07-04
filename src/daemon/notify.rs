@@ -15,7 +15,10 @@ pub fn format(notification: &Notification) -> Option<(String, String)> {
         AgentStatus::Error => ("❌", "Error"),
         AgentStatus::Running | AgentStatus::Idle => return None,
     };
-    let body = notification.message.clone().unwrap_or_else(|| fallback.into());
+    let body = notification
+        .message
+        .clone()
+        .unwrap_or_else(|| fallback.into());
     Some((format!("{emoji} {}", notification.title), body))
 }
 

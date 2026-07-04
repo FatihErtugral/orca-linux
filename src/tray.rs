@@ -68,7 +68,11 @@ impl ksni::Tray for OrcaTray {
     }
 
     fn icon_pixmap(&self) -> Vec<Icon> {
-        vec![icon(if self.attention() { ICON_ATTENTION } else { ICON_NORMAL })]
+        vec![icon(if self.attention() {
+            ICON_ATTENTION
+        } else {
+            ICON_NORMAL
+        })]
     }
 
     fn attention_icon_pixmap(&self) -> Vec<Icon> {
@@ -164,7 +168,12 @@ fn agent_item(row: &AgentRow) -> MenuItem<OrcaTray> {
 fn settings_menu(prefs: &NotificationPreferences) -> MenuItem<OrcaTray> {
     let toggles: [(&str, PrefKey, bool, bool); 5] = [
         ("Notifications", PrefKey::Enabled, prefs.enabled, true),
-        ("On waiting", PrefKey::OnWaiting, prefs.on_waiting, prefs.enabled),
+        (
+            "On waiting",
+            PrefKey::OnWaiting,
+            prefs.on_waiting,
+            prefs.enabled,
+        ),
         ("On done", PrefKey::OnDone, prefs.on_done, prefs.enabled),
         ("On error", PrefKey::OnError, prefs.on_error, prefs.enabled),
         ("Sound", PrefKey::Sound, prefs.sound, prefs.enabled),

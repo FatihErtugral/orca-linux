@@ -121,10 +121,16 @@ fn is_orca_entry(entry: &Value) -> bool {
 pub fn run_install() -> i32 {
     let installer = HookInstaller::system();
     if !installer.install() {
-        eprintln!("orca: failed to write {}", installer.settings_path.display());
+        eprintln!(
+            "orca: failed to write {}",
+            installer.settings_path.display()
+        );
         return 1;
     }
-    println!("orca: hooks installed -> {}", installer.settings_path.display());
+    println!(
+        "orca: hooks installed -> {}",
+        installer.settings_path.display()
+    );
     println!("(Restart Claude Code or open /hooks for them to take effect.)");
     0
 }
@@ -132,7 +138,10 @@ pub fn run_install() -> i32 {
 pub fn run_uninstall() -> i32 {
     let installer = HookInstaller::system();
     if !installer.uninstall() {
-        eprintln!("orca: failed to write {}", installer.settings_path.display());
+        eprintln!(
+            "orca: failed to write {}",
+            installer.settings_path.display()
+        );
         return 1;
     }
     println!("orca: hooks removed");

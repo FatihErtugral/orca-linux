@@ -119,7 +119,10 @@ mod tests {
     #[test]
     fn missing_file_and_partial_keys_fall_back_to_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(Config::load(&dir.path().join("nope.toml")), Config::default());
+        assert_eq!(
+            Config::load(&dir.path().join("nope.toml")),
+            Config::default()
+        );
 
         let path = dir.path().join("partial.toml");
         fs::write(&path, "[notifications]\nsound = false\n").unwrap();

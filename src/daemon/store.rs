@@ -100,10 +100,11 @@ impl AgentStore {
     pub fn agents(&self) -> Vec<&Agent> {
         let mut agents: Vec<&Agent> = self.map.values().collect();
         agents.sort_by(|a, b| {
-            a.status
-                .priority()
-                .cmp(&b.status.priority())
-                .then(b.last_update.partial_cmp(&a.last_update).unwrap_or(std::cmp::Ordering::Equal))
+            a.status.priority().cmp(&b.status.priority()).then(
+                b.last_update
+                    .partial_cmp(&a.last_update)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
         });
         agents
     }
@@ -255,7 +256,12 @@ impl AgentStore {
     }
 }
 
-fn update_run_timing(agent: &mut Agent, previous: Option<AgentStatus>, next: AgentStatus, now: f64) {
+fn update_run_timing(
+    agent: &mut Agent,
+    previous: Option<AgentStatus>,
+    next: AgentStatus,
+    now: f64,
+) {
     let was_running = previous == Some(AgentStatus::Running);
     let will_run = next == AgentStatus::Running;
     if will_run && !was_running {

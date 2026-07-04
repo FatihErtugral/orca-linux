@@ -15,6 +15,7 @@ use store::AgentStore;
 use title_refresher::TitleRefresher;
 
 /// Everything that can reach the store loop — the single place state mutates.
+#[allow(clippy::large_enum_variant)] // Msg volume is tiny; boxing buys nothing
 pub enum Msg {
     Event(AgentEvent),
     Dismiss(String),
@@ -113,7 +114,7 @@ pub fn run(argv: &[String]) -> i32 {
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 next_tick = Instant::now() + TICK;
                 tick_count += 1;
-                if tick_count % MAINTENANCE_EVERY == 0 {
+                if tick_count.is_multiple_of(MAINTENANCE_EVERY) {
                     let mut changed = store.evaluate_health(&AgentStore::is_process_alive);
                     store.prune(now_epoch());
                     changed |= refresher.refresh(&mut store);

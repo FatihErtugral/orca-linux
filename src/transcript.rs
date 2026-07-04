@@ -72,7 +72,11 @@ fn user_text(object: &Value) -> Option<String> {
             .filter_map(|part| part.get("text").and_then(Value::as_str))
             .collect();
         let joined = texts.join(" ").trim().to_string();
-        return if joined.is_empty() { None } else { Some(joined) };
+        return if joined.is_empty() {
+            None
+        } else {
+            Some(joined)
+        };
     }
     None
 }
@@ -138,7 +142,10 @@ mod tests {
             serde_json::json!({"type": "summary", "summary": "Sum"}),
             serde_json::json!({"type": "ai-title", "aiTitle": "Title"}),
         ]);
-        assert_eq!(session_title_from_contents(&content).as_deref(), Some("Title"));
+        assert_eq!(
+            session_title_from_contents(&content).as_deref(),
+            Some("Title")
+        );
     }
 
     #[test]

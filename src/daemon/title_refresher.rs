@@ -2,27 +2,27 @@ use super::store::AgentStore;
 use std::collections::HashMap;
 use std::time::SystemTime;
 
+type TitleProvider = Box<dyn Fn(&str) -> Option<String>>;
+type ModificationTime = Box<dyn Fn(&str) -> Option<SystemTime>>;
+
 /// Keeps Claude session titles fresh between hook events (e.g. after /rename),
 /// by re-deriving them from each open session's transcript. Transcripts are
 /// only re-parsed when their modification time changes.
 pub struct TitleRefresher {
-    title_provider: Box<dyn Fn(&str) -> Option<String>>,
-    modification_time: Box<dyn Fn(&str) -> Option<SystemTime>>,
+    title_provider: TitleProvider,
+    modification_time: ModificationTime,
     last_seen: HashMap<String, SystemTime>,
 }
 
 impl TitleRefresher {
     pub fn system() -> Self {
         Self::new(
-            Box::new(|path| crate::transcript::session_title(path)),
+            Box::new(crate::transcript::session_title),
             Box::new(|path| std::fs::metadata(path).ok()?.modified().ok()),
         )
     }
 
-    pub fn new(
-        title_provider: Box<dyn Fn(&str) -> Option<String>>,
-        modification_time: Box<dyn Fn(&str) -> Option<SystemTime>>,
-    ) -> Self {
+    pub fn new(title_provider: TitleProvider, modification_time: ModificationTime) -> Self {
         Self {
             title_provider,
             modification_time,
@@ -44,7 +44,11 @@ impl TitleRefresher {
             let Some(modified) = (self.modification_time)(&path) else {
                 continue;
             };
-            if self.last_seen.get(&path).is_some_and(|seen| *seen >= modified) {
+            if self
+                .last_seen
+                .get(&path)
+                .is_some_and(|seen| *seen >= modified)
+            {
                 continue;
             }
             self.last_seen.insert(path.clone(), modified);

@@ -46,7 +46,9 @@ fn controlling_tty() -> Option<String> {
         if unsafe { libc::isatty(fd) } != 0 {
             let name = unsafe { libc::ttyname(fd) };
             if !name.is_null() {
-                let s = unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned();
+                let s = unsafe { CStr::from_ptr(name) }
+                    .to_string_lossy()
+                    .into_owned();
                 if !s.is_empty() {
                     return Some(s);
                 }
@@ -126,7 +128,10 @@ mod tests {
         // major 136, minor 3 → /dev/pts/3
         assert_eq!(decode_tty_nr((136 << 8) | 3).as_deref(), Some("/dev/pts/3"));
         // major 137 continues the pts range at 256
-        assert_eq!(decode_tty_nr((137 << 8) | 1).as_deref(), Some("/dev/pts/257"));
+        assert_eq!(
+            decode_tty_nr((137 << 8) | 1).as_deref(),
+            Some("/dev/pts/257")
+        );
         // major 4 is a virtual console
         assert_eq!(decode_tty_nr((4 << 8) | 2).as_deref(), Some("/dev/tty2"));
         // no controlling terminal
@@ -139,7 +144,10 @@ mod tests {
     fn originator_pid_is_a_live_process() {
         let pid = originator_pid();
         assert!(pid > 0);
-        assert!(unsafe { libc::kill(pid, 0) } == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM));
+        assert!(
+            unsafe { libc::kill(pid, 0) } == 0
+                || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+        );
     }
 
     #[test]

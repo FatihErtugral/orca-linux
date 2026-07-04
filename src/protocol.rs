@@ -110,7 +110,10 @@ mod tests {
         let event: AgentEvent = serde_json::from_str(line).unwrap();
         assert_eq!(event.id, "s-1");
         assert_eq!(event.term_program.as_deref(), Some("iTerm.app"));
-        assert_eq!(event.app_bundle_id.as_deref(), Some("com.googlecode.iterm2"));
+        assert_eq!(
+            event.app_bundle_id.as_deref(),
+            Some("com.googlecode.iterm2")
+        );
         assert_eq!(event.transcript_path.as_deref(), Some("/x.jsonl"));
         assert_eq!(event.permission_mode.as_deref(), Some("default"));
         assert_eq!(event.pid, Some(123));

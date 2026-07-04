@@ -41,7 +41,12 @@ mod tests {
 
     #[test]
     fn parses_flag_value_pairs() {
-        let parsed = parse(&strings(&["--source", "claude-code", "--status", "running"]));
+        let parsed = parse(&strings(&[
+            "--source",
+            "claude-code",
+            "--status",
+            "running",
+        ]));
         assert_eq!(parsed.flags["source"], "claude-code");
         assert_eq!(parsed.flags["status"], "running");
         assert!(parsed.rest.is_empty());

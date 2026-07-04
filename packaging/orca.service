@@ -1,0 +1,11 @@
+[Unit]
+Description=Orca agent tray
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/orca tray
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

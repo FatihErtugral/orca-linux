@@ -35,7 +35,10 @@ impl Server {
             if UnixStream::connect(path).is_ok() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::AddrInUse,
-                    format!("another orca daemon is already listening on {}", path.display()),
+                    format!(
+                        "another orca daemon is already listening on {}",
+                        path.display()
+                    ),
                 ));
             }
             let _ = std::fs::remove_file(path);

@@ -6,13 +6,15 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub type TitleProvider = Box<dyn Fn(&str) -> Option<String>>;
+
 /// Builds `AgentEvent`s from parsed flags and optional hook payloads.
 /// Collaborators are injected so the resolution logic can be tested without a
 /// real terminal, clock, or transcript file.
 pub struct EventBuilder {
     pub identity: Box<dyn Fn() -> TerminalIdentity>,
     pub originator_pid: Box<dyn Fn() -> i32>,
-    pub session_title: Box<dyn Fn(&str) -> Option<String>>,
+    pub session_title: TitleProvider,
     pub now: Box<dyn Fn() -> f64>,
     pub current_dir: Box<dyn Fn() -> String>,
 }
@@ -22,7 +24,7 @@ impl EventBuilder {
         Self {
             identity: Box::new(terminal::resolve),
             originator_pid: Box::new(terminal::originator_pid),
-            session_title: Box::new(|path| transcript::session_title(path)),
+            session_title: Box::new(transcript::session_title),
             now: Box::new(|| {
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -38,7 +40,10 @@ impl EventBuilder {
     }
 
     pub fn event(&self, flags: &HashMap<String, String>, hook: Option<&Value>) -> AgentEvent {
-        let source = flags.get("source").cloned().unwrap_or_else(|| "custom".into());
+        let source = flags
+            .get("source")
+            .cloned()
+            .unwrap_or_else(|| "custom".into());
         let cwd = flags
             .get("cwd")
             .cloned()
@@ -54,7 +59,9 @@ impl EventBuilder {
             .cloned()
             .or_else(|| hook_str(hook, "transcript_path"));
         let session_title = if source == "claude-code" {
-            transcript_path.as_deref().and_then(|p| (self.session_title)(p))
+            transcript_path
+                .as_deref()
+                .and_then(|p| (self.session_title)(p))
         } else {
             None
         };
@@ -64,7 +71,10 @@ impl EventBuilder {
             .or(session_title)
             .unwrap_or_else(|| basename(&cwd));
 
-        let mut status = flags.get("status").cloned().unwrap_or_else(|| "running".into());
+        let mut status = flags
+            .get("status")
+            .cloned()
+            .unwrap_or_else(|| "running".into());
         let mut message = flags.get("message").cloned();
         // A Stop that fires while background tasks are still pending is not
         // "your turn" — Claude will auto-resume, so keep the agent running.
@@ -160,7 +170,10 @@ mod tests {
     }
 
     fn flags(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -190,7 +203,8 @@ mod tests {
 
     #[test]
     fn hook_provides_id_cwd_and_basename_title() {
-        let hook = serde_json::json!({"session_id": "abc", "cwd": "/proj", "transcript_path": "/t"});
+        let hook =
+            serde_json::json!({"session_id": "abc", "cwd": "/proj", "transcript_path": "/t"});
         let event = builder(TerminalIdentity::default(), None, "/cwd")
             .event(&flags(&[("source", "claude-code")]), Some(&hook));
         assert_eq!(event.id, "abc");
@@ -200,8 +214,12 @@ mod tests {
 
     #[test]
     fn non_claude_source_ignores_transcript_title() {
-        let event = builder(TerminalIdentity::default(), Some("should-not-use"), "/work/dir")
-            .event(&flags(&[("source", "custom"), ("id", "x")]), None);
+        let event = builder(
+            TerminalIdentity::default(),
+            Some("should-not-use"),
+            "/work/dir",
+        )
+        .event(&flags(&[("source", "custom"), ("id", "x")]), None);
         assert_eq!(event.id, "x");
         assert_eq!(event.title.as_deref(), Some("dir"));
     }
@@ -221,8 +239,10 @@ mod tests {
             "session_id": "s", "cwd": "/p",
             "hook_event_name": "Stop", "background_tasks_pending": true
         });
-        let event = builder(TerminalIdentity::default(), None, "/cwd")
-            .event(&flags(&[("source", "claude-code"), ("status", "waiting")]), Some(&hook));
+        let event = builder(TerminalIdentity::default(), None, "/cwd").event(
+            &flags(&[("source", "claude-code"), ("status", "waiting")]),
+            Some(&hook),
+        );
         assert_eq!(event.status, "running");
         assert_eq!(event.message.as_deref(), Some("Working in background"));
     }
@@ -230,8 +250,10 @@ mod tests {
     #[test]
     fn stop_awaiting_background_stays_running() {
         let hook = serde_json::json!({"session_id": "s", "awaiting_background": true});
-        let event = builder(TerminalIdentity::default(), None, "/cwd")
-            .event(&flags(&[("source", "claude-code"), ("status", "waiting")]), Some(&hook));
+        let event = builder(TerminalIdentity::default(), None, "/cwd").event(
+            &flags(&[("source", "claude-code"), ("status", "waiting")]),
+            Some(&hook),
+        );
         assert_eq!(event.status, "running");
     }
 
@@ -242,7 +264,11 @@ mod tests {
             "background_tasks_pending": false, "awaiting_background": false
         });
         let event = builder(TerminalIdentity::default(), None, "/cwd").event(
-            &flags(&[("source", "claude-code"), ("status", "waiting"), ("message", "Your turn")]),
+            &flags(&[
+                ("source", "claude-code"),
+                ("status", "waiting"),
+                ("message", "Your turn"),
+            ]),
             Some(&hook),
         );
         assert_eq!(event.status, "waiting");
@@ -252,8 +278,10 @@ mod tests {
     #[test]
     fn event_carries_transcript_path() {
         let hook = serde_json::json!({"session_id": "s", "transcript_path": "/t/x.jsonl"});
-        let event = builder(TerminalIdentity::default(), Some("T"), "/cwd")
-            .event(&flags(&[("source", "claude-code"), ("status", "running")]), Some(&hook));
+        let event = builder(TerminalIdentity::default(), Some("T"), "/cwd").event(
+            &flags(&[("source", "claude-code"), ("status", "running")]),
+            Some(&hook),
+        );
         assert_eq!(event.transcript_path.as_deref(), Some("/t/x.jsonl"));
     }
 }
