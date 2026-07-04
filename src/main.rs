@@ -8,6 +8,7 @@ mod state_store;
 mod terminal;
 mod transcript;
 mod tray;
+mod version;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -26,6 +27,7 @@ fn main() {
         "install-hooks" => cli::hooks::run_install(),
         "uninstall-hooks" => cli::hooks::run_uninstall(),
         "tray" | "daemon" => daemon::run(rest),
+        "update" => cli::update::run_update(rest),
         "--version" | "version" => {
             println!("orca v{VERSION}");
             0
@@ -53,6 +55,8 @@ Usage:
   orca wrap            [--source S] [--title T] -- <command> [args...]
   orca install-hooks   Add Orca's Claude Code hooks to ~/.claude/settings.json
   orca uninstall-hooks Remove Orca's hooks
+  orca update          Update to the latest GitHub release
+  orca update --check  Only report whether an update is available
 
 `event` also reads a Claude Code hook payload from stdin (session_id, cwd, transcript_path)."
     );
