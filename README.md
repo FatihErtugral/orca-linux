@@ -12,6 +12,10 @@ session *state* (running / waiting / done / error) reported by lifecycle hooks.
 > Orca for Linux targets **KDE Plasma 6 only** (Wayland or X11). The panel
 > widget is a native plasmoid; there is no GNOME support.
 
+<p align="center">
+  <img src="docs/screenshot.png" width="420" alt="Orca plasmoid on the KDE panel: dolphin + running/open counter, with the session popup open">
+</p>
+
 ## How it works
 
 ```
