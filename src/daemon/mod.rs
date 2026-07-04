@@ -336,6 +336,7 @@ fn build_ui_state(store: &AgentStore, config: &Config) -> UiState {
         running: store.running_count(),
         open: store.open_session_count(),
         prefs: config.notifications,
+        version: crate::version::CURRENT.to_string(),
     }
 }
 

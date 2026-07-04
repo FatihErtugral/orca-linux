@@ -10,6 +10,10 @@ pub struct UiState {
     pub running: usize,
     pub open: usize,
     pub prefs: NotificationPreferences,
+    /// Daemon version — the plasmoid shows it and uses its change as the
+    /// "update finished" signal.
+    #[serde(default)]
+    pub version: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]

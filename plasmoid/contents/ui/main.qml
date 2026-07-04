@@ -52,17 +52,66 @@ PlasmoidItem {
         }
     ]
 
+    // idle | checking | uptodate | available | installing | failed
+    property string updateState: "idle"
+    property string updateVersion: ""
+
     P5Support.DataSource {
         id: shell
         engine: "executable"
-        onNewData: sourceName => disconnectSource(sourceName)
+        onNewData: (sourceName, data) => {
+            disconnectSource(sourceName)
+            if (sourceName.indexOf("update --check") === -1) {
+                return
+            }
+            var out = ((data["stdout"] || "") + "").trim()
+            if (out.indexOf("update-available") === 0) {
+                root.updateVersion = out.split(/\s+/)[1] || ""
+                root.updateState = "available"
+            } else if (out.indexOf("up to date") !== -1) {
+                root.updateState = "uptodate"
+            } else {
+                root.updateState = "failed"
+            }
+        }
+    }
+
+    function updateButtonLabel() {
+        switch (updateState) {
+        case "checking": return i18n("Checking…")
+        case "uptodate": return i18n("Up to date ✓")
+        case "available": return i18n("Install %1", updateVersion)
+        case "installing": return i18n("Installing %1…", updateVersion)
+        case "failed": return i18n("Check failed — retry")
+        default: return i18n("Check for updates")
+        }
+    }
+
+    function onUpdateButton() {
+        if (updateState === "available") {
+            updateState = "installing"
+            // The updater swaps the binary and restarts the service; the
+            // websocket reconnect with a new version resets the state below.
+            shell.connectSource("$HOME/.local/bin/orca update")
+        } else {
+            updateState = "checking"
+            shell.connectSource("$HOME/.local/bin/orca update --check")
+        }
     }
 
     WebSocket {
         id: socket
         url: "ws://127.0.0.1:" + root.ports[root.portIndex]
         active: true
-        onTextMessageReceived: message => { root.appState = JSON.parse(message) }
+        onTextMessageReceived: message => {
+            var previous = root.appState.version
+            root.appState = JSON.parse(message)
+            // A version change while installing means the update landed.
+            if (root.updateState === "installing" && root.appState.version !== previous) {
+                root.updateState = "idle"
+                root.updateVersion = ""
+            }
+        }
     }
 
     Timer {
@@ -367,6 +416,22 @@ PlasmoidItem {
             }
 
             Item { Layout.fillHeight: true }
+
+            Kirigami.Separator { Layout.fillWidth: true }
+            RowLayout {
+                Layout.fillWidth: true
+                PC3.Label {
+                    text: root.appState.version ? "Orca v" + root.appState.version : "Orca"
+                    opacity: 0.5
+                    font.pointSize: Kirigami.Theme.smallFont.pointSize
+                }
+                Item { Layout.fillWidth: true }
+                PC3.Button {
+                    text: root.updateButtonLabel()
+                    enabled: root.updateState !== "checking" && root.updateState !== "installing"
+                    onClicked: root.onUpdateButton()
+                }
+            }
         }
     }
 }

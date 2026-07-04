@@ -12,7 +12,7 @@
         "Id": "com.github.fatihertugral.orca",
         "License": "PolyForm-Noncommercial-1.0.0",
         "Name": "Orca",
-        "Version": "0.3.0",
+        "Version": "0.3.2",
         "Website": "https://github.com/FatihErtugral/orca-linux"
     },
     "KPackageStructure": "Plasma/Applet",
