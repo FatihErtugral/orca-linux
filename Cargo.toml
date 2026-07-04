@@ -1,0 +1,23 @@
+[package]
+name = "orca"
+version = "0.1.0"
+edition = "2021"
+description = "Tray status tracker for CLI AI agents — Linux port of Orca for macOS"
+license = "PolyForm-Noncommercial-1.0.0"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+libc = "0.2"
+toml = "0.8"
+log = "0.4"
+env_logger = "0.11"
+notify-rust = "4.18.0"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = true
