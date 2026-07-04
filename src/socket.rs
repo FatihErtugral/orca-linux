@@ -57,6 +57,7 @@ impl Server {
         }
     }
 
+    #[allow(dead_code)]
     pub fn socket_path(&self) -> &Path {
         &self.path
     }

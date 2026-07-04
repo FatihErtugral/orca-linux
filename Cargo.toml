@@ -14,6 +14,7 @@ toml = "0.8"
 log = "0.4"
 env_logger = "0.11"
 notify-rust = "4.18.0"
+ksni = { version = "0.3.5", features = ["blocking"] }
 
 [dev-dependencies]
 tempfile = "3"
@@ -21,3 +22,6 @@ tempfile = "3"
 [profile.release]
 strip = true
 lto = true
+
+[build-dependencies]
+png = "0.18.1"

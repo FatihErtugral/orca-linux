@@ -108,6 +108,7 @@ impl AgentStore {
         agents
     }
 
+    #[allow(dead_code)] // post-MVP seam (terminal focus needs per-agent lookup)
     pub fn get(&self, id: &str) -> Option<&Agent> {
         self.map.get(id)
     }
@@ -195,6 +196,7 @@ impl AgentStore {
         }
     }
 
+    #[allow(dead_code)] // post-MVP seam (ollama polling)
     pub fn sync_ollama(&mut self, models: &[String], now: f64) {
         let current: HashSet<String> = models.iter().map(|m| format!("ollama:{m}")).collect();
         for name in models {
