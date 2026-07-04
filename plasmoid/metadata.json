@@ -1,0 +1,20 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "fatihertugral89@gmail.com",
+                "Name": "Fatih Ertugral"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Tray status tracker for CLI AI agents",
+        "Icon": "utilities-terminal",
+        "Id": "com.github.fatihertugral.orca",
+        "License": "PolyForm-Noncommercial-1.0.0",
+        "Name": "Orca",
+        "Version": "0.3.0",
+        "Website": "https://github.com/FatihErtugral/orca-linux"
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

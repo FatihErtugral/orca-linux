@@ -1,27 +1,38 @@
-# Orca for Linux
+# Orca for Linux (KDE Plasma)
 
-Tray status tracker for CLI AI agents — the Linux port of
+Panel status tracker for CLI AI agents — the **KDE Plasma** port of
 [Orca for macOS](https://github.com/FatihErtugral/orca). One glance at the
-system tray tells you which agent sessions are running, which are waiting for
-your input, and for how long. Desktop notifications fire the moment an agent
-needs you.
+panel tells you which agent sessions are running, which are waiting for your
+input, and for how long. Desktop notifications fire the moment an agent needs
+you.
 
 Orca does **not** read prompts, responses or any model traffic. It only tracks
 session *state* (running / waiting / done / error) reported by lifecycle hooks.
+
+> Orca for Linux targets **KDE Plasma 6 only** (Wayland or X11). The panel
+> widget is a native plasmoid; there is no GNOME support.
 
 ## How it works
 
 ```
 Claude Code hooks ──┐
-orca wrap <cmd>  ───┼──> orca event ──> unix socket ──> orca tray (daemon)
-                    │      (CLI)      $XDG_RUNTIME_DIR     │  StatusNotifierItem
-                    │                    /orca.sock        │  + notifications
-                    └── JSON, one line per event ──────────┘
+orca wrap <cmd>  ───┼──> orca event ──> unix socket ──────> orca tray (daemon)
+                    │      (CLI)      $XDG_RUNTIME_DIR        │            │
+                    └── JSON, one line per event ─────────────┘            │
+                                                                loopback websocket
+                                                                           │
+                                              Plasma panel widget (plasmoid)
+                                              dolphin + [running/open] + popup
 ```
 
-- **`orca tray`** — the daemon: listens on the socket, keeps the state machine,
-  renders the tray icon/menu (SNI/DBusMenu, native on KDE Plasma) and sends
-  desktop notifications (`org.freedesktop.Notifications`).
+- **Plasmoid** — the panel face: dolphin icon plus the framed `running/open`
+  counter as one wide element (like the clock); clicking opens a native,
+  panel-anchored popup with the session list and settings. It subscribes to
+  the daemon over a loopback WebSocket and pushes actions back the same way.
+- **`orca tray`** — the daemon: socket server, state machine, notifications
+  (`org.freedesktop.Notifications` + sound). Run it with `--no-tray` when the
+  plasmoid is your UI; without the flag it also provides a classic
+  StatusNotifierItem pair + standalone popover as a fallback interface.
 - **`orca event`** — fire-and-forget client used by hooks; if the daemon is not
   running it silently no-ops so your agent never breaks. Also persists
   open-session state so a later daemon launch rediscovers live sessions.
@@ -30,38 +41,37 @@ orca wrap <cmd>  ───┼──> orca event ──> unix socket ──> orca
 
 ## Install
 
-Quick install (downloads the latest release, installs hooks, sets up the
-systemd user service; falls back to a source build when no compatible binary
-exists):
+Quick install (downloads the latest release, installs the plasmoid, Claude
+Code hooks and the systemd user service; falls back to a source build when no
+compatible binary exists):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/FatihErtugral/orca-linux/master/install.sh | bash
 ```
 
+Then add the **Orca** widget to your panel (right-click panel → Add Widgets →
+Orca) — the installer also tries to add it to the bottom panel automatically.
+
 From source (needs `rustup`):
 
 ```sh
-make install          # cargo build --release + install to ~/.local/bin/orca
-orca install-hooks    # add Claude Code hooks to ~/.claude/settings.json
-orca tray &           # or: install -Dm644 packaging/orca.service ~/.config/systemd/user/ && systemctl --user enable --now orca
+make install            # cargo build --release + install to ~/.local/bin/orca
+make install-plasmoid   # kpackagetool6 install/upgrade of the panel widget
+orca install-hooks      # add Claude Code hooks to ~/.claude/settings.json
+install -Dm644 packaging/orca.service ~/.config/systemd/user/orca.service
+systemctl --user enable --now orca
 ```
 
 Update later with `orca update` (checks GitHub releases, swaps the binary,
 refreshes hooks, restarts the daemon).
 
-## Compatibility
+## Requirements
 
-Nothing in Orca is distro-specific: paths follow the XDG spec, the tray is
-StatusNotifierItem over DBus, notifications are `org.freedesktop.Notifications`
-and the popover renders with egui (Wayland and X11). What you need:
-
-- **KDE Plasma**: works out of the box (SNI is native).
-- **GNOME**: install the *AppIndicator and KStatusNotifierItem* extension for
-  the tray icon; everything else works as-is.
-- Sway/Hyprland/etc.: any SNI tray (waybar, swaybar) shows the icon.
-- Prebuilt release binaries target glibc 2.36+ (Debian 12, Ubuntu 22.10+,
-  Fedora 37+, any Arch/openSUSE TW). Older or musl systems: `install.sh`
-  builds from source automatically.
+- **KDE Plasma 6** (Wayland or X11) with `kpackagetool6` (part of Plasma).
+- QtWebSockets QML module (`qt6-websockets`; preinstalled on most distros).
+- Prebuilt release binaries target glibc 2.36+ (Debian 12+, Ubuntu 22.10+,
+  Fedora 37+, Arch/openSUSE TW). Older systems: `install.sh` builds from
+  source automatically (needs `rustup`).
 
 ## Connecting sources
 

@@ -31,7 +31,8 @@ else
     cp target/release/orca "$DIST/orca"
 fi
 
-tar -C "$DIST" -czf "$DIST/orca-linux-$ARCH.tar.gz" orca
+cp -r plasmoid "$DIST/plasmoid"
+tar -C "$DIST" -czf "$DIST/orca-linux-$ARCH.tar.gz" orca plasmoid
 echo "==> Asset: $DIST/orca-linux-$ARCH.tar.gz"
 
 gh release create "$TAG" "$DIST/orca-linux-$ARCH.tar.gz" \

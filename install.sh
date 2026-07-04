@@ -42,11 +42,33 @@ install_prebuilt() {
     install -Dm755 "$TMP/orca" "$BIN_DIR/orca"
 }
 
+PLASMOID_SRC=""
 if ! install_prebuilt; then
     echo "==> Prebuilt binary unavailable or incompatible with this system"
     build_from_source
+    PLASMOID_SRC="$TMP/src/plasmoid"
+else
+    PLASMOID_SRC="$TMP/plasmoid"
 fi
 echo "==> Installed $("$BIN_DIR/orca" --version) -> $BIN_DIR/orca"
+
+if command -v kpackagetool6 >/dev/null 2>&1 && [ -d "$PLASMOID_SRC" ]; then
+    echo "==> Installing the Plasma panel widget"
+    kpackagetool6 --type Plasma/Applet --install "$PLASMOID_SRC" 2>/dev/null \
+        || kpackagetool6 --type Plasma/Applet --upgrade "$PLASMOID_SRC"
+    # Best effort: drop the widget onto the bottom panel if it is not there.
+    busctl --user call org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell evaluateScript s "
+        var present = false;
+        for (var i in panels()) { var p = panels()[i];
+            for (var j in p.widgetIds) { if (p.widgets()[j].type == 'com.github.fatihertugral.orca') present = true; } }
+        if (!present) { for (var i in panels()) { var p = panels()[i];
+            if (p.location == 'bottom') { p.addWidget('com.github.fatihertugral.orca'); break; } } }
+    " >/dev/null 2>&1 || echo "    (add the Orca widget to your panel manually: right-click panel → Add Widgets)"
+    ORCA_TRAY_ARGS=" --no-tray"   # the plasmoid replaces the SNI fallback UI
+else
+    echo "==> kpackagetool6 not found — Orca for Linux requires KDE Plasma 6"
+    ORCA_TRAY_ARGS=""
+fi
 
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
@@ -82,7 +104,7 @@ After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
-ExecStart=$BIN_DIR/orca tray
+ExecStart=$BIN_DIR/orca tray$ORCA_TRAY_ARGS
 Restart=on-failure
 
 [Install]

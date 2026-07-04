@@ -25,5 +25,9 @@ install: release
 install-hooks: install
 	$(PREFIX)/bin/orca install-hooks
 
+install-plasmoid:
+	kpackagetool6 --type Plasma/Applet --install plasmoid 2>/dev/null || \
+	kpackagetool6 --type Plasma/Applet --upgrade plasmoid
+
 clean:
 	$(CARGO) clean

@@ -5,14 +5,12 @@ pub mod store;
 pub mod title_refresher;
 
 use crate::protocol::AgentEvent;
-use crate::socket::{Action, Inbound};
+use crate::socket::{Action, Inbound, StateSink};
 use crate::state_store::StateStore;
 use crate::ui_state::{UiAgent, UiState};
 use crate::{args, paths, socket};
 use notify::{DesktopNotifier, Notifier};
 use prefs::Config;
-use std::io::Write;
-use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -24,7 +22,7 @@ use title_refresher::TitleRefresher;
 #[allow(clippy::large_enum_variant)] // Msg volume is tiny; boxing buys nothing
 pub enum Msg {
     Event(AgentEvent),
-    Subscribe(UnixStream),
+    Subscribe(Box<dyn StateSink>),
     Dismiss(String),
     Focus(String),
     SetPref(PrefKey, bool),
@@ -85,13 +83,18 @@ pub fn run(argv: &[String]) -> i32 {
 
     // Socket thread: decoded messages are forwarded into the store loop.
     let (inbound_tx, inbound_rx) = mpsc::channel::<Inbound>();
+    // Loopback WebSocket for the Plasma plasmoid (QML has no unix sockets).
+    match crate::ws::spawn(inbound_tx.clone()) {
+        Some(port) => log::info!("plasmoid websocket on 127.0.0.1:{port}"),
+        None => log::warn!("no free plasmoid websocket port in {:?}", crate::ws::PORTS),
+    }
     thread::spawn(move || server.run(inbound_tx));
     let forward = tx.clone();
     thread::spawn(move || {
         for inbound in inbound_rx {
             let msg = match inbound {
                 Inbound::Event(event) => Msg::Event(event),
-                Inbound::Subscribe(stream) => Msg::Subscribe(stream),
+                Inbound::Subscribe(sink) => Msg::Subscribe(sink),
                 Inbound::Action(action) => match map_action(action) {
                     Some(msg) => msg,
                     None => continue,
@@ -127,7 +130,7 @@ pub fn run(argv: &[String]) -> i32 {
 
     let notifier = DesktopNotifier;
     let mut refresher = TitleRefresher::system();
-    let mut subscribers: Vec<UnixStream> = Vec::new();
+    let mut subscribers: Vec<Box<dyn StateSink>> = Vec::new();
     let mut last_ui = UiState::default();
     let mut popup = PopupProcess::default();
 
@@ -152,8 +155,8 @@ pub fn run(argv: &[String]) -> i32 {
                     false,
                 );
             }
-            Ok(Msg::Subscribe(stream)) => {
-                subscribe(stream, &last_ui, &mut subscribers);
+            Ok(Msg::Subscribe(sink)) => {
+                subscribe(sink, &last_ui, &mut subscribers);
             }
             Ok(Msg::Dismiss(id)) => {
                 store.remove(&id);
@@ -227,6 +230,7 @@ fn map_action(action: Action) -> Option<Msg> {
             let key = PrefKey::parse(action.key.as_deref()?)?;
             Some(Msg::SetPref(key, action.value?))
         }
+        "quit" => Some(Msg::Quit),
         _ => None,
     }
 }
@@ -281,16 +285,21 @@ impl PopupProcess {
     }
 }
 
-fn subscribe(stream: UnixStream, last_ui: &UiState, subscribers: &mut Vec<UnixStream>) {
-    let mut stream = stream;
-    if write_state(&mut stream, last_ui) {
-        subscribers.push(stream);
+fn subscribe(
+    mut sink: Box<dyn StateSink>,
+    last_ui: &UiState,
+    subscribers: &mut Vec<Box<dyn StateSink>>,
+) {
+    if let Ok(json) = serde_json::to_string(last_ui) {
+        if sink.send_state(&json) {
+            subscribers.push(sink);
+        }
     }
 }
 
 fn push_snapshots(
     tray: &Option<crate::tray::Handle>,
-    subscribers: &mut Vec<UnixStream>,
+    subscribers: &mut Vec<Box<dyn StateSink>>,
     last_ui: &mut UiState,
     store: &AgentStore,
     config: &Config,
@@ -303,16 +312,10 @@ fn push_snapshots(
     if !force && state == *last_ui {
         return;
     }
-    subscribers.retain_mut(|stream| write_state(stream, &state));
+    if let Ok(json) = serde_json::to_string(&state) {
+        subscribers.retain_mut(|sink| sink.send_state(&json));
+    }
     *last_ui = state;
-}
-
-fn write_state(stream: &mut UnixStream, state: &UiState) -> bool {
-    let Ok(mut line) = serde_json::to_vec(state) else {
-        return false;
-    };
-    line.push(b'\n');
-    stream.write_all(&line).is_ok()
 }
 
 fn build_ui_state(store: &AgentStore, config: &Config) -> UiState {

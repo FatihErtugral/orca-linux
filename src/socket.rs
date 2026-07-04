@@ -34,14 +34,32 @@ fn send_line(path: &Path, mut data: Vec<u8>) -> bool {
     stream.write_all(&data).is_ok()
 }
 
+/// A subscriber the daemon pushes UiState documents to — the unix-socket
+/// popup and the plasmoid's websocket implement this the same way.
+pub trait StateSink: Send {
+    /// Push one UiState JSON document; returning false drops the subscriber.
+    fn send_state(&mut self, json: &str) -> bool;
+}
+
+struct UnixSink(UnixStream);
+
+impl StateSink for UnixSink {
+    fn send_state(&mut self, json: &str) -> bool {
+        self.0
+            .write_all(json.as_bytes())
+            .and_then(|_| self.0.write_all(b"\n"))
+            .is_ok()
+    }
+}
+
 /// Everything a client connection can deliver to the daemon.
 #[allow(clippy::large_enum_variant)] // message volume is tiny; boxing buys nothing
 pub enum Inbound {
     /// A status event from hooks / `orca wrap` (the original wire protocol).
     Event(AgentEvent),
-    /// A popup asked to receive UiState lines; the stream is the write half.
-    Subscribe(UnixStream),
-    /// A popup control message (dismiss / focus / set_pref / popup_hidden).
+    /// A client asked to receive UiState pushes.
+    Subscribe(Box<dyn StateSink>),
+    /// A popup/plasmoid control message (dismiss / focus / set_pref / quit).
     Action(Action),
 }
 
@@ -155,7 +173,10 @@ fn parse_line(line: &[u8], stream: &UnixStream) -> Option<Inbound> {
     }
     let value: serde_json::Value = serde_json::from_slice(line).ok()?;
     match value.get("type").and_then(|t| t.as_str()) {
-        Some("subscribe") => stream.try_clone().ok().map(Inbound::Subscribe),
+        Some("subscribe") => stream
+            .try_clone()
+            .ok()
+            .map(|s| Inbound::Subscribe(Box::new(UnixSink(s)))),
         Some("action") => serde_json::from_value::<Action>(value)
             .ok()
             .map(Inbound::Action),
@@ -248,9 +269,9 @@ mod tests {
                     assert_eq!(a.id.as_deref(), Some("a"));
                     got_action = true;
                 }
-                Inbound::Subscribe(mut stream) => {
-                    // The daemon can push lines back on the subscription.
-                    stream.write_all(b"{\"hello\":1}\n").unwrap();
+                Inbound::Subscribe(mut sink) => {
+                    // The daemon can push documents back on the subscription.
+                    assert!(sink.send_state("{\"hello\":1}"));
                     got_subscribe = true;
                 }
             }

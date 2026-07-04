@@ -1,9 +1,10 @@
 # Orca for Linux — architecture & project rules
 
-Linux port of Orca (macOS, `github.com/FatihErtugral/orca`): a tray status
-tracker for CLI AI agents. One binary, four roles: `tray` (daemon), `popup`
-(short-lived popover process), `event`/`wrap` (CLI producers), plus
-`install-hooks`/`uninstall-hooks`/`update`.
+**KDE Plasma 6 port** of Orca (macOS, `github.com/FatihErtugral/orca`): a
+panel status tracker for CLI AI agents. KDE-only by decision — the panel face
+is a native plasmoid; do not add GNOME/other-DE support paths. One binary:
+`tray` (daemon), `popup` (fallback popover process), `event`/`wrap` (CLI
+producers), plus `install-hooks`/`uninstall-hooks`/`update`.
 
 ## Architecture (read this before touching anything)
 
@@ -11,13 +12,19 @@ tracker for CLI AI agents. One binary, four roles: `tray` (daemon), `popup`
 hooks / wrap ──orca event──► UDS $XDG_RUNTIME_DIR/orca.sock
                                   │ NDJSON, one message per line
                                   ▼
-                     daemon (orca tray) ── ksni ──► SNI tray icon + DBus menu
-                     single store loop thread          │ left click → TogglePopup
-                     (only mutator of AgentStore)      ▼
-                                  ▲            spawns/kills `orca popup`
-                                  │ subscribe/action    (eframe window; process
-                                  └────────────────────  lifetime == visibility)
+                     daemon (orca tray) ──ws.rs──► loopback WebSocket 41957-66
+                     single store loop thread            │ subscribe/action
+                     (only mutator of AgentStore)        ▼
+                                  ▲              Plasma plasmoid (plasmoid/)
+                                  │               dolphin + [1/3] + native popup
+                                  │
+                     fallback UI (no --no-tray): ksni SNI pair + `orca popup`
+                     process (eframe; process lifetime == visibility)
 ```
+
+The plasmoid is the primary UI (daemon runs with `--no-tray`); the SNI pair +
+popup process remain as the fallback when the plasmoid is not installed. Both
+consume the same subscribe/action protocol (`StateSink` seam in socket.rs).
 
 - **`daemon/store.rs`** — pure state machine (port of macOS `AgentStore`):
   no I/O, no clock; `now` is a parameter, liveness is an injected predicate,

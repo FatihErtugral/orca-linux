@@ -1,6 +1,6 @@
 [package]
 name = "orca"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 description = "Tray status tracker for CLI AI agents — Linux port of Orca for macOS"
 license = "PolyForm-Noncommercial-1.0.0"
@@ -16,6 +16,7 @@ env_logger = "0.11"
 notify-rust = "4.18.0"
 ksni = { version = "0.3.5", features = ["blocking"] }
 eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+sha1 = "0.11.0"
 
 [dev-dependencies]
 tempfile = "3"

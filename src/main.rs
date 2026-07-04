@@ -12,6 +12,7 @@ mod transcript;
 mod tray;
 mod ui_state;
 mod version;
+mod ws;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
