@@ -101,13 +101,18 @@ PlasmoidItem {
     compactRepresentation: MouseArea {
         id: compact
         readonly property real iconSize: Math.min(height, Kirigami.Units.iconSizes.medium)
-        implicitWidth: compactRow.implicitWidth + Kirigami.Units.smallSpacing * 2
+        // Breathing room: margins around the pair, clear gap between the two.
+        // Panels size compact representations from the Layout attached
+        // properties, not implicitWidth — set both.
+        implicitWidth: compactRow.implicitWidth + Kirigami.Units.largeSpacing * 2
+        Layout.minimumWidth: implicitWidth
+        Layout.preferredWidth: implicitWidth
         onClicked: root.expanded = !root.expanded
 
         RowLayout {
             id: compactRow
             anchors.centerIn: parent
-            spacing: Kirigami.Units.smallSpacing
+            spacing: Kirigami.Units.largeSpacing
 
             Image {
                 source: Qt.resolvedUrl("../images/orca.png")
@@ -123,8 +128,11 @@ PlasmoidItem {
                 border.color: root.accent
                 border.width: 1.4
                 radius: height / 3
-                Layout.preferredHeight: counterLabel.implicitHeight + Kirigami.Units.smallSpacing
-                Layout.preferredWidth: counterLabel.implicitWidth + Kirigami.Units.smallSpacing * 2.5
+                // Implicit (not Layout.preferred) sizes: RowLayout's implicit
+                // width sums these, and the panel allocates from that — with
+                // preferred-only sizing the capsule overflowed the panel edge.
+                implicitHeight: counterLabel.implicitHeight + Kirigami.Units.smallSpacing
+                implicitWidth: counterLabel.implicitWidth + Kirigami.Units.smallSpacing * 2.5
 
                 PC3.Label {
                     id: counterLabel
