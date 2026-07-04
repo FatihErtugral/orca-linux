@@ -64,11 +64,11 @@ impl ksni::Tray for OrcaTray {
     }
 
     fn status(&self) -> Status {
-        if self.attention() {
-            Status::NeedsAttention
-        } else {
-            Status::Active
-        }
+        // Never NeedsAttention: Plasma renders it as an endless pulsing
+        // animation, which reads as urgency even for a routine "your turn".
+        // The macOS design signals attention with a static color change, so
+        // the orange icon variant (see icon_pixmap) carries that role alone.
+        Status::Active
     }
 
     fn icon_pixmap(&self) -> Vec<Icon> {
