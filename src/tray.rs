@@ -155,10 +155,12 @@ fn agent_item(row: &AgentRow) -> MenuItem<OrcaTray> {
         }),
         ..Default::default()
     }));
-    // Post-MVP seam: focus the owning terminal via KWin/Konsole DBus.
+    let focus_id = row.id.clone();
     children.push(MenuItem::Standard(StandardItem {
         label: "Focus terminal".into(),
-        enabled: false,
+        activate: Box::new(move |tray: &mut OrcaTray| {
+            let _ = tray.tx.send(Msg::Focus(focus_id.clone()));
+        }),
         ..Default::default()
     }));
 

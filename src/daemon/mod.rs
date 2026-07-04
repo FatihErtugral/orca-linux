@@ -1,3 +1,4 @@
+pub mod focus;
 pub mod notify;
 pub mod prefs;
 pub mod store;
@@ -23,6 +24,7 @@ use title_refresher::TitleRefresher;
 pub enum Msg {
     Event(AgentEvent),
     Dismiss(String),
+    Focus(String),
     SetPref(PrefKey, bool),
     TogglePopup,
     Quit,
@@ -141,6 +143,17 @@ fn store_loop(
                 store.remove(&id);
                 state_store.remove(&id);
                 push_snapshots(&tray, &shared, &store, &config);
+            }
+            Ok(Msg::Focus(id)) => {
+                if let Some(agent) = store.get(&id) {
+                    let target = focus::FocusTarget {
+                        pid: agent.pid,
+                        cwd: agent.cwd.clone(),
+                        term_program: agent.term_program.clone(),
+                    };
+                    // Shell-outs to busctl must not stall the store loop.
+                    thread::spawn(move || focus::focus(&target));
+                }
             }
             Ok(Msg::SetPref(key, value)) => {
                 apply_pref(&mut config, key, value);

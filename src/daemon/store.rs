@@ -109,7 +109,6 @@ impl AgentStore {
         agents
     }
 
-    #[allow(dead_code)] // post-MVP seam (terminal focus needs per-agent lookup)
     pub fn get(&self, id: &str) -> Option<&Agent> {
         self.map.get(id)
     }

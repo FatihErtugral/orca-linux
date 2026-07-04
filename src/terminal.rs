@@ -18,7 +18,9 @@ pub fn resolve() -> TerminalIdentity {
         tty: controlling_tty(),
         term_program: term_program(),
         session: env_non_empty("KONSOLE_DBUS_SESSION").or_else(|| env_non_empty("TERM_SESSION_ID")),
-        app_bundle_id: None,
+        // No bundle ids on Linux; carry Konsole's per-instance DBus service
+        // name instead (useful for tab-level focusing later).
+        app_bundle_id: env_non_empty("KONSOLE_DBUS_SERVICE"),
     }
 }
 

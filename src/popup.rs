@@ -136,6 +136,7 @@ impl eframe::App for PopupApp {
         self.was_focused = focused;
 
         let state = self.shared.state.lock().unwrap().clone();
+        let mut focus_clicked = false;
         let panel_frame = egui::Frame::window(ui.style())
             .corner_radius(12.0)
             .inner_margin(14.0);
@@ -156,12 +157,19 @@ impl eframe::App for PopupApp {
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
                             for row in &state.rows {
-                                self.agent_row(ui, row, now);
+                                if self.agent_row(ui, row, now) {
+                                    focus_clicked = true;
+                                }
                                 ui.add_space(4.0);
                             }
                         });
                 }
             });
+
+        // Jumping to the terminal hands focus away, so close like a popover.
+        if focus_clicked {
+            self.hide(&ctx);
+        }
 
         // Tick the durations only while someone can see them.
         if visible && state.rows.iter().any(|r| r.status == AgentStatus::Running) {
@@ -187,7 +195,30 @@ impl PopupApp {
         });
     }
 
-    fn agent_row(&self, ui: &mut egui::Ui, row: &UiAgent, now: f64) {
+    /// Renders one agent row. Returns true when the row body was clicked
+    /// (jump to the owning terminal, like the macOS popover).
+    fn agent_row(&self, ui: &mut egui::Ui, row: &UiAgent, now: f64) -> bool {
+        let response = ui
+            .scope_builder(
+                egui::UiBuilder::new()
+                    .id_salt(&row.id)
+                    .sense(egui::Sense::click()),
+                |ui| {
+                    self.agent_row_contents(ui, row, now);
+                },
+            )
+            .response;
+        let clicked = response.clicked();
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if clicked {
+            let _ = self.tx.send(Msg::Focus(row.id.clone()));
+        }
+        clicked
+    }
+
+    fn agent_row_contents(&self, ui: &mut egui::Ui, row: &UiAgent, now: f64) {
         ui.horizontal_top(|ui| {
             // Status dot, top-aligned like the macOS popover.
             let (rect, _) = ui.allocate_exact_size(egui::vec2(9.0, 18.0), egui::Sense::hover());
