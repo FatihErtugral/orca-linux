@@ -100,7 +100,7 @@ PlasmoidItem {
     // ------------------------------------------------------------- compact
     compactRepresentation: MouseArea {
         id: compact
-        readonly property real iconSize: Math.min(height, Kirigami.Units.iconSizes.medium)
+        readonly property real iconSize: Math.min(height, Kirigami.Units.iconSizes.medium) * 0.85
         // Breathing room: margins around the pair, clear gap between the two.
         // Panels size compact representations from the Layout attached
         // properties, not implicitWidth — set both.
@@ -282,7 +282,8 @@ PlasmoidItem {
             }
         }
 
-        // Settings pane
+        // Settings pane — label on the left, switch at the end of the row
+        // (macOS/Plasma settings convention).
         ColumnLayout {
             visible: root.showSettings
             Layout.fillWidth: true
@@ -290,37 +291,55 @@ PlasmoidItem {
             Layout.margins: Kirigami.Units.smallSpacing
             spacing: Kirigami.Units.smallSpacing
 
+            component SettingToggle: RowLayout {
+                id: row
+                property alias text: label.text
+                property bool checked: false
+                signal switched(bool value)
+                Layout.fillWidth: true
+                PC3.Label {
+                    id: label
+                    Layout.fillWidth: true
+                    elide: Text.ElideRight
+                }
+                PC3.Switch {
+                    checked: row.checked
+                    onToggled: row.switched(checked)
+                }
+            }
+
             Kirigami.Heading { level: 5; text: i18n("Notifications") }
-            PC3.Switch {
+            SettingToggle {
                 text: i18n("Enable notifications")
                 checked: root.appState.prefs.enabled
-                onToggled: root.act({ action: "set_pref", key: "enabled", value: checked })
+                onSwitched: value => root.act({ action: "set_pref", key: "enabled", value: value })
             }
             ColumnLayout {
+                Layout.fillWidth: true
                 Layout.leftMargin: Kirigami.Units.gridUnit
                 enabled: root.appState.prefs.enabled
-                PC3.Switch {
+                SettingToggle {
                     text: i18n("Waiting for input")
                     checked: root.appState.prefs.on_waiting
-                    onToggled: root.act({ action: "set_pref", key: "on_waiting", value: checked })
+                    onSwitched: value => root.act({ action: "set_pref", key: "on_waiting", value: value })
                 }
-                PC3.Switch {
+                SettingToggle {
                     text: i18n("Finished")
                     checked: root.appState.prefs.on_done
-                    onToggled: root.act({ action: "set_pref", key: "on_done", value: checked })
+                    onSwitched: value => root.act({ action: "set_pref", key: "on_done", value: value })
                 }
-                PC3.Switch {
+                SettingToggle {
                     text: i18n("Errors")
                     checked: root.appState.prefs.on_error
-                    onToggled: root.act({ action: "set_pref", key: "on_error", value: checked })
+                    onSwitched: value => root.act({ action: "set_pref", key: "on_error", value: value })
                 }
             }
             Kirigami.Heading { level: 5; text: i18n("Sound") }
-            PC3.Switch {
+            SettingToggle {
                 text: i18n("Play sound")
                 enabled: root.appState.prefs.enabled
                 checked: root.appState.prefs.sound
-                onToggled: root.act({ action: "set_pref", key: "sound", value: checked })
+                onSwitched: value => root.act({ action: "set_pref", key: "sound", value: value })
             }
 
             Item { Layout.fillHeight: true }
