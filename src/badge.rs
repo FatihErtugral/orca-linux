@@ -5,28 +5,25 @@
 
 pub const SIZE: usize = 96;
 
-/// Compose the tray icon. The dolphin always stays at its full 96x96 size;
-/// open sessions overlay a filled `running/open` counter on the lower-right
-/// corner, the way app icons carry notification badges. (A wide side-by-side
-/// pixmap does not work here: Plasma scales icons into a square tray cell,
-/// which would shrink everything.)
-pub fn compose(base: &[u8], running: usize, open: usize, color: (u8, u8, u8)) -> Vec<u8> {
-    let mut canvas = base.to_vec();
-    if open > 0 {
-        draw_badge(&mut canvas, &format!("{running}/{open}"), color);
-    }
+/// The `[running/open]` counter as its own full-cell icon — the exact macOS
+/// design: a thin rounded-rectangle frame with the counts inside, sitting in
+/// the tray right next to the dolphin. (Plasma gives every StatusNotifierItem
+/// a square cell, so the pair lives as two adjacent items instead of one wide
+/// one.)
+pub fn counter_icon(running: usize, open: usize, color: (u8, u8, u8)) -> Vec<u8> {
+    let mut canvas = vec![0u8; SIZE * SIZE * 4];
+    draw_counter(&mut canvas, &format!("{running}/{open}"), color);
     canvas
 }
 
-fn draw_badge(canvas: &mut [u8], label: &str, color: (u8, u8, u8)) {
-    // Lower-right corner, overlaid on the dolphin like an app badge.
-    const X0: i32 = 34;
-    const Y0: i32 = 52;
-    const X1: i32 = 96;
-    const Y1: i32 = 96;
-    const RADIUS: i32 = 14;
-    const STROKE: i32 = 4;
-    const FILL: (u8, u8, u8) = (0x20, 0x20, 0x20);
+fn draw_counter(canvas: &mut [u8], label: &str, color: (u8, u8, u8)) {
+    // Frame proportions matching the macOS badge: wider than tall, centered.
+    const X0: i32 = 2;
+    const Y0: i32 = 20;
+    const X1: i32 = 94;
+    const Y1: i32 = 76;
+    const RADIUS: i32 = 18;
+    const STROKE: i32 = 6;
 
     for y in Y0..Y1 {
         for x in X0..X1 {
@@ -40,10 +37,7 @@ fn draw_badge(canvas: &mut [u8], label: &str, color: (u8, u8, u8)) {
                 Y1 - STROKE,
                 RADIUS - STROKE,
             );
-            if inner {
-                // Solid dark plate keeps the digits readable over the art.
-                set_px(canvas, x as usize, y as usize, FILL);
-            } else if outer {
+            if outer && !inner {
                 set_px(canvas, x as usize, y as usize, color);
             }
         }
@@ -151,10 +145,6 @@ fn glyph(c: char) -> Option<[u8; 7]> {
 mod tests {
     use super::*;
 
-    fn base() -> Vec<u8> {
-        vec![0x80; SIZE * SIZE * 4]
-    }
-
     fn colored_pixels(buffer: &[u8], color: (u8, u8, u8)) -> usize {
         buffer
             .chunks_exact(4)
@@ -163,27 +153,22 @@ mod tests {
     }
 
     #[test]
-    fn no_open_sessions_returns_plain_base() {
-        assert_eq!(compose(&base(), 0, 0, (1, 2, 3)), base());
-    }
-
-    #[test]
-    fn badge_overlays_corner_and_leaves_top_untouched() {
+    fn counter_draws_frame_and_text() {
         let color = (0xE8, 0xE8, 0xE8);
-        let icon = compose(&base(), 1, 2, color);
+        let icon = counter_icon(1, 2, color);
         assert_eq!(icon.len(), SIZE * SIZE * 4);
-        // The top half of the dolphin stays untouched.
-        assert_eq!(&icon[..SIZE * 4 * 48], &base()[..SIZE * 4 * 48]);
-        // Frame + "1/2" should paint a substantial number of pixels.
-        assert!(colored_pixels(&icon, color) > 300);
+        // Frame + "1/2" should paint a substantial number of pixels, and
+        // everything outside the frame stays transparent.
+        assert!(colored_pixels(&icon, color) > 400);
+        assert_eq!(icon[3], 0, "corners must stay transparent");
     }
 
     #[test]
     fn wide_labels_still_fit() {
         let color = (0xFF, 0x9F, 0x0A);
-        let icon = compose(&base(), 12, 34, color);
+        let icon = counter_icon(12, 34, color);
         // "12/34" at a smaller scale still renders text pixels.
-        assert!(colored_pixels(&icon, color) > 300);
+        assert!(colored_pixels(&icon, color) > 400);
     }
 
     #[test]
