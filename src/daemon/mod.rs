@@ -3,12 +3,16 @@ pub mod prefs;
 pub mod store;
 pub mod title_refresher;
 
+use crate::popup::{SharedUi, UiAgent, UiState};
 use crate::protocol::AgentEvent;
 use crate::state_store::StateStore;
 use crate::{args, paths, socket};
+use eframe::egui;
 use notify::{DesktopNotifier, Notifier};
 use prefs::Config;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::AgentStore;
@@ -20,6 +24,7 @@ pub enum Msg {
     Event(AgentEvent),
     Dismiss(String),
     SetPref(PrefKey, bool),
+    TogglePopup,
     Quit,
 }
 
@@ -65,9 +70,7 @@ pub fn run(argv: &[String]) -> i32 {
 
     let state_store = StateStore::default_store();
     let mut store = AgentStore::default();
-    let mut config = Config::load(&paths::config_path());
-    let notifier = DesktopNotifier;
-    let mut refresher = TitleRefresher::system();
+    let config = Config::load(&paths::config_path());
 
     // Rehydrate sessions that were already open before the daemon launched.
     for event in state_store.load_all(1800.0, now_epoch(), &AgentStore::is_process_alive) {
@@ -75,18 +78,52 @@ pub fn run(argv: &[String]) -> i32 {
     }
     log::info!("rehydrated {} session(s)", store.agents().len());
 
-    let tray = if no_tray {
-        None
-    } else {
-        match crate::tray::spawn(tx.clone()) {
-            Ok(handle) => Some(handle),
-            Err(error) => {
-                eprintln!("orca: could not start tray: {error} (running headless)");
-                None
-            }
+    if no_tray {
+        store_loop(rx, store, state_store, config, None, None);
+        let _ = std::fs::remove_file(&socket_path);
+        return 0;
+    }
+
+    let tray = match crate::tray::spawn(tx.clone()) {
+        Ok(handle) => Some(handle),
+        Err(error) => {
+            eprintln!("orca: could not start tray: {error} (popover still available)");
+            None
         }
     };
-    push_tray_snapshot(&tray, &store, &config);
+
+    let shared = Arc::new(SharedUi::default());
+    let worker_shared = shared.clone();
+    let worker = thread::spawn(move || {
+        store_loop(rx, store, state_store, config, tray, Some(worker_shared));
+    });
+
+    // The popover runs on the main thread (winit requirement). If it cannot
+    // start (e.g. no GL), fall back to tray-menu-only operation.
+    match crate::popup::run(shared, tx.clone()) {
+        Ok(()) => {
+            let _ = tx.send(Msg::Quit);
+        }
+        Err(error) => {
+            eprintln!("orca: popover UI unavailable: {error} (tray menu still works)");
+        }
+    }
+    let _ = worker.join();
+    let _ = std::fs::remove_file(&socket_path);
+    0
+}
+
+fn store_loop(
+    rx: mpsc::Receiver<Msg>,
+    mut store: AgentStore,
+    state_store: StateStore,
+    mut config: Config,
+    tray: Option<crate::tray::Handle>,
+    shared: Option<Arc<SharedUi>>,
+) {
+    let notifier = DesktopNotifier;
+    let mut refresher = TitleRefresher::system();
+    push_snapshots(&tray, &shared, &store, &config);
 
     let mut next_tick = Instant::now() + TICK;
     let mut tick_count: u64 = 0;
@@ -98,18 +135,19 @@ pub fn run(argv: &[String]) -> i32 {
                 if let Some(notification) = store.apply(&event, now_epoch()) {
                     dispatch(&notifier, &config, &notification);
                 }
-                push_tray_snapshot(&tray, &store, &config);
+                push_snapshots(&tray, &shared, &store, &config);
             }
             Ok(Msg::Dismiss(id)) => {
                 store.remove(&id);
                 state_store.remove(&id);
-                push_tray_snapshot(&tray, &store, &config);
+                push_snapshots(&tray, &shared, &store, &config);
             }
             Ok(Msg::SetPref(key, value)) => {
                 apply_pref(&mut config, key, value);
                 config.save(&paths::config_path());
-                push_tray_snapshot(&tray, &store, &config);
+                push_snapshots(&tray, &shared, &store, &config);
             }
+            Ok(Msg::TogglePopup) => toggle_popup(&shared),
             Ok(Msg::Quit) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 next_tick = Instant::now() + TICK;
@@ -118,18 +156,91 @@ pub fn run(argv: &[String]) -> i32 {
                     let mut changed = store.evaluate_health(&AgentStore::is_process_alive);
                     store.prune(now_epoch());
                     changed |= refresher.refresh(&mut store);
-                    if changed {
-                        log::debug!("maintenance changed store state");
-                    }
+                    let _ = changed;
                 }
-                push_tray_snapshot(&tray, &store, &config);
+                push_snapshots(&tray, &shared, &store, &config);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 
-    let _ = std::fs::remove_file(&socket_path);
-    0
+    // Close the popover so eframe's run loop returns and the process exits.
+    if let Some(shared) = &shared {
+        if let Some(ctx) = shared.ctx.get() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            ctx.request_repaint();
+        }
+    }
+}
+
+fn push_snapshots(
+    tray: &Option<crate::tray::Handle>,
+    shared: &Option<Arc<SharedUi>>,
+    store: &AgentStore,
+    config: &Config,
+) {
+    if let Some(handle) = tray {
+        handle.update(store, config);
+    }
+    if let Some(shared) = shared {
+        let state = UiState {
+            rows: store
+                .agents()
+                .iter()
+                .map(|agent| UiAgent {
+                    id: agent.id.clone(),
+                    title: agent.title.clone(),
+                    source: agent.source.clone(),
+                    status: agent.status,
+                    message: agent.message.clone(),
+                    run_started_at: agent.run_started_at,
+                    last_run_duration: agent.last_run_duration,
+                })
+                .collect(),
+            running: store.running_count(),
+            open: store.open_session_count(),
+            prefs: config.notifications,
+        };
+        let changed = {
+            let mut current = shared.state.lock().unwrap();
+            let changed = !same_state(&current, &state);
+            *current = state;
+            changed
+        };
+        if changed && shared.visible.load(Ordering::Relaxed) {
+            if let Some(ctx) = shared.ctx.get() {
+                ctx.request_repaint();
+            }
+        }
+    }
+}
+
+/// Durations tick locally in the UI, so two states are "the same" when
+/// everything except the wall clock matches.
+fn same_state(a: &UiState, b: &UiState) -> bool {
+    a.running == b.running
+        && a.open == b.open
+        && a.prefs == b.prefs
+        && a.rows.len() == b.rows.len()
+        && a.rows.iter().zip(&b.rows).all(|(x, y)| {
+            x.id == y.id
+                && x.title == y.title
+                && x.status == y.status
+                && x.message == y.message
+                && x.run_started_at == y.run_started_at
+        })
+}
+
+fn toggle_popup(shared: &Option<Arc<SharedUi>>) {
+    let Some(shared) = shared else { return };
+    let Some(ctx) = shared.ctx.get() else { return };
+    let show = !shared.visible.load(Ordering::Relaxed);
+    shared.visible.store(show, Ordering::Relaxed);
+    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(show));
+    if show {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+    ctx.request_repaint();
 }
 
 fn dispatch(notifier: &dyn Notifier, config: &Config, notification: &store::Notification) {
@@ -149,12 +260,6 @@ fn apply_pref(config: &mut Config, key: PrefKey, value: bool) {
         PrefKey::OnDone => prefs.on_done = value,
         PrefKey::OnError => prefs.on_error = value,
         PrefKey::Sound => prefs.sound = value,
-    }
-}
-
-fn push_tray_snapshot(tray: &Option<crate::tray::Handle>, store: &AgentStore, config: &Config) {
-    if let Some(handle) = tray {
-        handle.update(store, config);
     }
 }
 

@@ -114,12 +114,24 @@ fn restart_daemon(target: &Path) {
         return;
     }
 
-    let was_running = Command::new("pkill")
-        .args(["-f", "orca (tray|daemon)"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if was_running {
+    // Find daemon processes by exact name, excluding this updater itself
+    // (both are named "orca", so a plain pkill would be self-inflicted).
+    let daemons: Vec<i32> = Command::new("pgrep")
+        .args(["-x", "orca"])
+        .output()
+        .ok()
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|line| line.trim().parse().ok())
+                .filter(|pid| *pid != std::process::id() as i32)
+                .collect()
+        })
+        .unwrap_or_default();
+    for pid in &daemons {
+        unsafe { libc::kill(*pid, libc::SIGTERM) };
+    }
+    if !daemons.is_empty() {
         println!("==> Relaunching orca tray");
         std::thread::sleep(std::time::Duration::from_millis(400));
         let _ = Command::new(target)

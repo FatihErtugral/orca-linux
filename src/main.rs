@@ -2,6 +2,7 @@ mod args;
 mod cli;
 mod daemon;
 mod paths;
+mod popup;
 mod protocol;
 mod socket;
 mod state_store;

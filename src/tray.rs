@@ -49,10 +49,14 @@ impl OrcaTray {
 }
 
 impl ksni::Tray for OrcaTray {
-    const MENU_ON_ACTIVATE: bool = true;
-
     fn id(&self) -> String {
         "orca".into()
+    }
+
+    /// Left click toggles the popover, like the macOS status item. The DBus
+    /// menu stays available on right click.
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.tx.send(Msg::TogglePopup);
     }
 
     fn title(&self) -> String {
