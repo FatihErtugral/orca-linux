@@ -95,9 +95,7 @@ fn install_release(tag: &str, tmp: &Path) -> Result<(), String> {
 /// The running executable's own path — updating in place keeps hooks, service
 /// files and PATH entries valid.
 fn install_target() -> PathBuf {
-    std::env::current_exe().unwrap_or_else(|_| {
-        crate::paths::home().join(".local/bin/orca")
-    })
+    std::env::current_exe().unwrap_or_else(|_| crate::paths::home().join(".local/bin/orca"))
 }
 
 fn restart_daemon(target: &Path) {
@@ -147,7 +145,10 @@ fn latest_release_tag() -> Option<String> {
     let output = Command::new("curl")
         .args([
             "-fsSL",
-            &format!("https://api.github.com/repos/{}/releases/latest", version::REPO),
+            &format!(
+                "https://api.github.com/repos/{}/releases/latest",
+                version::REPO
+            ),
         ])
         .output()
         .ok()?;

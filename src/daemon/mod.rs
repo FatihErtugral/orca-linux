@@ -4,16 +4,17 @@ pub mod prefs;
 pub mod store;
 pub mod title_refresher;
 
-use crate::popup::{SharedUi, UiAgent, UiState};
 use crate::protocol::AgentEvent;
+use crate::socket::{Action, Inbound};
 use crate::state_store::StateStore;
+use crate::ui_state::{UiAgent, UiState};
 use crate::{args, paths, socket};
-use eframe::egui;
 use notify::{DesktopNotifier, Notifier};
 use prefs::Config;
-use std::sync::atomic::Ordering;
+use std::io::Write;
+use std::os::unix::net::UnixStream;
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::AgentStore;
@@ -23,9 +24,11 @@ use title_refresher::TitleRefresher;
 #[allow(clippy::large_enum_variant)] // Msg volume is tiny; boxing buys nothing
 pub enum Msg {
     Event(AgentEvent),
+    Subscribe(UnixStream),
     Dismiss(String),
     Focus(String),
     SetPref(PrefKey, bool),
+    PopupHidden,
     TogglePopup,
     Quit,
 }
@@ -39,8 +42,35 @@ pub enum PrefKey {
     Sound,
 }
 
+impl PrefKey {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::OnWaiting => "on_waiting",
+            Self::OnDone => "on_done",
+            Self::OnError => "on_error",
+            Self::Sound => "sound",
+        }
+    }
+
+    pub fn parse(key: &str) -> Option<Self> {
+        match key {
+            "enabled" => Some(Self::Enabled),
+            "on_waiting" => Some(Self::OnWaiting),
+            "on_done" => Some(Self::OnDone),
+            "on_error" => Some(Self::OnError),
+            "sound" => Some(Self::Sound),
+            _ => None,
+        }
+    }
+}
+
 const TICK: Duration = Duration::from_secs(1);
 const MAINTENANCE_EVERY: u64 = 3; // seconds, mirroring the macOS 3s timer
+
+/// A toggle arriving right after the popup hid itself (focus loss when the
+/// user clicks the tray icon) means "close", not "reopen".
+const REOPEN_GRACE: Duration = Duration::from_millis(400);
 
 pub fn run(argv: &[String]) -> i32 {
     let parsed = args::parse(argv);
@@ -58,13 +88,21 @@ pub fn run(argv: &[String]) -> i32 {
 
     let (tx, rx) = mpsc::channel::<Msg>();
 
-    // Socket thread: decoded events are forwarded into the store loop.
-    let (event_tx, event_rx) = mpsc::channel::<AgentEvent>();
-    thread::spawn(move || server.run(event_tx));
+    // Socket thread: decoded messages are forwarded into the store loop.
+    let (inbound_tx, inbound_rx) = mpsc::channel::<Inbound>();
+    thread::spawn(move || server.run(inbound_tx));
     let forward = tx.clone();
     thread::spawn(move || {
-        for event in event_rx {
-            if forward.send(Msg::Event(event)).is_err() {
+        for inbound in inbound_rx {
+            let msg = match inbound {
+                Inbound::Event(event) => Msg::Event(event),
+                Inbound::Subscribe(stream) => Msg::Subscribe(stream),
+                Inbound::Action(action) => match map_action(action) {
+                    Some(msg) => msg,
+                    None => continue,
+                },
+            };
+            if forward.send(msg).is_err() {
                 break;
             }
         }
@@ -72,7 +110,7 @@ pub fn run(argv: &[String]) -> i32 {
 
     let state_store = StateStore::default_store();
     let mut store = AgentStore::default();
-    let config = Config::load(&paths::config_path());
+    let mut config = Config::load(&paths::config_path());
 
     // Rehydrate sessions that were already open before the daemon launched.
     for event in state_store.load_all(1800.0, now_epoch(), &AgentStore::is_process_alive) {
@@ -80,52 +118,25 @@ pub fn run(argv: &[String]) -> i32 {
     }
     log::info!("rehydrated {} session(s)", store.agents().len());
 
-    if no_tray {
-        store_loop(rx, store, state_store, config, None, None);
-        let _ = std::fs::remove_file(&socket_path);
-        return 0;
-    }
-
-    let tray = match crate::tray::spawn(tx.clone()) {
-        Ok(handle) => Some(handle),
-        Err(error) => {
-            eprintln!("orca: could not start tray: {error} (popover still available)");
-            None
+    let tray = if no_tray {
+        None
+    } else {
+        match crate::tray::spawn(tx.clone()) {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                eprintln!("orca: could not start tray: {error} (running headless)");
+                None
+            }
         }
     };
 
-    let shared = Arc::new(SharedUi::default());
-    let worker_shared = shared.clone();
-    let worker = thread::spawn(move || {
-        store_loop(rx, store, state_store, config, tray, Some(worker_shared));
-    });
-
-    // The popover runs on the main thread (winit requirement). If it cannot
-    // start (e.g. no GL), fall back to tray-menu-only operation.
-    match crate::popup::run(shared, tx.clone()) {
-        Ok(()) => {
-            let _ = tx.send(Msg::Quit);
-        }
-        Err(error) => {
-            eprintln!("orca: popover UI unavailable: {error} (tray menu still works)");
-        }
-    }
-    let _ = worker.join();
-    let _ = std::fs::remove_file(&socket_path);
-    0
-}
-
-fn store_loop(
-    rx: mpsc::Receiver<Msg>,
-    mut store: AgentStore,
-    state_store: StateStore,
-    mut config: Config,
-    tray: Option<crate::tray::Handle>,
-    shared: Option<Arc<SharedUi>>,
-) {
     let notifier = DesktopNotifier;
     let mut refresher = TitleRefresher::system();
-    push_snapshots(&tray, &shared, &store, &config);
+    let mut subscribers: Vec<UnixStream> = Vec::new();
+    let mut last_ui = UiState::default();
+    let mut popup = PopupProcess::default();
+
+    push_snapshots(&tray, &mut subscribers, &mut last_ui, &store, &config, true);
 
     let mut next_tick = Instant::now() + TICK;
     let mut tick_count: u64 = 0;
@@ -137,12 +148,29 @@ fn store_loop(
                 if let Some(notification) = store.apply(&event, now_epoch()) {
                     dispatch(&notifier, &config, &notification);
                 }
-                push_snapshots(&tray, &shared, &store, &config);
+                push_snapshots(
+                    &tray,
+                    &mut subscribers,
+                    &mut last_ui,
+                    &store,
+                    &config,
+                    false,
+                );
+            }
+            Ok(Msg::Subscribe(stream)) => {
+                subscribe(stream, &last_ui, &mut subscribers);
             }
             Ok(Msg::Dismiss(id)) => {
                 store.remove(&id);
                 state_store.remove(&id);
-                push_snapshots(&tray, &shared, &store, &config);
+                push_snapshots(
+                    &tray,
+                    &mut subscribers,
+                    &mut last_ui,
+                    &store,
+                    &config,
+                    false,
+                );
             }
             Ok(Msg::Focus(id)) => {
                 if let Some(agent) = store.get(&id) {
@@ -158,107 +186,169 @@ fn store_loop(
             Ok(Msg::SetPref(key, value)) => {
                 apply_pref(&mut config, key, value);
                 config.save(&paths::config_path());
-                push_snapshots(&tray, &shared, &store, &config);
+                push_snapshots(
+                    &tray,
+                    &mut subscribers,
+                    &mut last_ui,
+                    &store,
+                    &config,
+                    false,
+                );
             }
-            Ok(Msg::TogglePopup) => toggle_popup(&shared),
+            Ok(Msg::PopupHidden) => popup.mark_hidden(),
+            Ok(Msg::TogglePopup) => popup.toggle(),
             Ok(Msg::Quit) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 next_tick = Instant::now() + TICK;
                 tick_count += 1;
+                popup.reap();
                 if tick_count.is_multiple_of(MAINTENANCE_EVERY) {
-                    let mut changed = store.evaluate_health(&AgentStore::is_process_alive);
+                    store.evaluate_health(&AgentStore::is_process_alive);
                     store.prune(now_epoch());
-                    changed |= refresher.refresh(&mut store);
-                    let _ = changed;
+                    refresher.refresh(&mut store);
                 }
-                push_snapshots(&tray, &shared, &store, &config);
+                push_snapshots(
+                    &tray,
+                    &mut subscribers,
+                    &mut last_ui,
+                    &store,
+                    &config,
+                    false,
+                );
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
 
-    // Close the popover so eframe's run loop returns and the process exits.
-    if let Some(shared) = &shared {
-        if let Some(ctx) = shared.ctx.get() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            ctx.request_repaint();
+    popup.terminate();
+    let _ = std::fs::remove_file(&socket_path);
+    0
+}
+
+fn map_action(action: Action) -> Option<Msg> {
+    match action.action.as_str() {
+        "dismiss" => action.id.map(Msg::Dismiss),
+        "focus" => action.id.map(Msg::Focus),
+        "set_pref" => {
+            let key = PrefKey::parse(action.key.as_deref()?)?;
+            Some(Msg::SetPref(key, action.value?))
         }
+        "popup_hidden" => Some(Msg::PopupHidden),
+        _ => None,
     }
 }
 
-fn push_snapshots(
-    tray: &Option<crate::tray::Handle>,
-    shared: &Option<Arc<SharedUi>>,
-    store: &AgentStore,
-    config: &Config,
-) {
-    if let Some(handle) = tray {
-        handle.update(store, config);
+/// The popover lives in its own short-lived process: window lifetime equals
+/// visibility, which sidesteps Wayland's unsupported hide/show entirely and
+/// keeps the daemon free of any GL/UI footprint.
+#[derive(Default)]
+struct PopupProcess {
+    child: Option<Child>,
+    hidden_at: Option<Instant>,
+}
+
+impl PopupProcess {
+    fn toggle(&mut self) {
+        self.reap();
+        if self.child.is_some() {
+            self.terminate();
+            return;
+        }
+        if let Some(hidden) = self.hidden_at.take() {
+            if hidden.elapsed() < REOPEN_GRACE {
+                return; // the click that closed it must not reopen it
+            }
+        }
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        match Command::new(exe)
+            .arg("popup")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(child) => self.child = Some(child),
+            Err(error) => log::warn!("could not launch popup: {error}"),
+        }
     }
-    if let Some(shared) = shared {
-        let state = UiState {
-            rows: store
-                .agents()
-                .iter()
-                .map(|agent| UiAgent {
-                    id: agent.id.clone(),
-                    title: agent.title.clone(),
-                    source: agent.source.clone(),
-                    status: agent.status,
-                    message: agent.message.clone(),
-                    run_started_at: agent.run_started_at,
-                    last_run_duration: agent.last_run_duration,
-                })
-                .collect(),
-            running: store.running_count(),
-            open: store.open_session_count(),
-            prefs: config.notifications,
-        };
-        let changed = {
-            let mut current = shared.state.lock().unwrap();
-            let changed = !same_state(&current, &state);
-            *current = state;
-            changed
-        };
-        if changed && shared.visible.load(Ordering::Relaxed) {
-            if let Some(ctx) = shared.ctx.get() {
-                ctx.request_repaint();
+
+    fn mark_hidden(&mut self) {
+        self.hidden_at = Some(Instant::now());
+    }
+
+    fn reap(&mut self) {
+        if let Some(child) = &mut self.child {
+            if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
+                self.child = None;
+            }
+        }
+    }
+
+    fn terminate(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            if matches!(child.try_wait(), Ok(None)) {
+                unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+                let _ = child.wait();
             }
         }
     }
 }
 
-/// Durations tick locally in the UI, so two states are "the same" when
-/// everything except the wall clock matches.
-fn same_state(a: &UiState, b: &UiState) -> bool {
-    a.running == b.running
-        && a.open == b.open
-        && a.prefs == b.prefs
-        && a.rows.len() == b.rows.len()
-        && a.rows.iter().zip(&b.rows).all(|(x, y)| {
-            x.id == y.id
-                && x.title == y.title
-                && x.status == y.status
-                && x.message == y.message
-                && x.run_started_at == y.run_started_at
-        })
+fn subscribe(stream: UnixStream, last_ui: &UiState, subscribers: &mut Vec<UnixStream>) {
+    let mut stream = stream;
+    if write_state(&mut stream, last_ui) {
+        subscribers.push(stream);
+    }
 }
 
-fn toggle_popup(shared: &Option<Arc<SharedUi>>) {
-    let Some(shared) = shared else { return };
-    let Some(ctx) = shared.ctx.get() else { return };
-    let show = !shared.visible.load(Ordering::Relaxed);
-    shared.visible.store(show, Ordering::Relaxed);
-    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(show));
-    if show {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        // Dock above the tray corner once the surface is mapped.
-        thread::spawn(|| {
-            thread::sleep(Duration::from_millis(120));
-            focus::position_popup_bottom_right();
-        });
+fn push_snapshots(
+    tray: &Option<crate::tray::Handle>,
+    subscribers: &mut Vec<UnixStream>,
+    last_ui: &mut UiState,
+    store: &AgentStore,
+    config: &Config,
+    force: bool,
+) {
+    if let Some(handle) = tray {
+        handle.update(store, config);
     }
-    ctx.request_repaint();
+    let state = build_ui_state(store, config);
+    if !force && state == *last_ui {
+        return;
+    }
+    subscribers.retain_mut(|stream| write_state(stream, &state));
+    *last_ui = state;
+}
+
+fn write_state(stream: &mut UnixStream, state: &UiState) -> bool {
+    let Ok(mut line) = serde_json::to_vec(state) else {
+        return false;
+    };
+    line.push(b'\n');
+    stream.write_all(&line).is_ok()
+}
+
+fn build_ui_state(store: &AgentStore, config: &Config) -> UiState {
+    UiState {
+        rows: store
+            .agents()
+            .iter()
+            .map(|agent| UiAgent {
+                id: agent.id.clone(),
+                title: agent.title.clone(),
+                source: agent.source.clone(),
+                status: agent.status,
+                message: agent.message.clone(),
+                run_started_at: agent.run_started_at,
+                last_run_duration: agent.last_run_duration,
+            })
+            .collect(),
+        running: store.running_count(),
+        open: store.open_session_count(),
+        prefs: config.notifications,
+    }
 }
 
 fn dispatch(notifier: &dyn Notifier, config: &Config, notification: &store::Notification) {

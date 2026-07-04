@@ -152,7 +152,15 @@ fn run_script_text(kind: &str, script: &str) -> bool {
 
 fn run_kwin_script(path: &std::path::Path) -> bool {
     let output = Command::new("busctl")
-        .args(["--user", "call", "org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "loadScript", "s"])
+        .args([
+            "--user",
+            "call",
+            "org.kde.KWin",
+            "/Scripting",
+            "org.kde.kwin.Scripting",
+            "loadScript",
+            "s",
+        ])
         .arg(path)
         .output();
     let Ok(output) = output else { return false };
@@ -168,12 +176,26 @@ fn run_kwin_script(path: &std::path::Path) -> bool {
     let mut ran = false;
     for object_path in [format!("/Scripting/Script{id}"), format!("/{id}")] {
         let status = Command::new("busctl")
-            .args(["--user", "call", "org.kde.KWin", &object_path, "org.kde.kwin.Script", "run"])
+            .args([
+                "--user",
+                "call",
+                "org.kde.KWin",
+                &object_path,
+                "org.kde.kwin.Script",
+                "run",
+            ])
             .output();
         if status.map(|o| o.status.success()).unwrap_or(false) {
             ran = true;
             let _ = Command::new("busctl")
-                .args(["--user", "call", "org.kde.KWin", &object_path, "org.kde.kwin.Script", "stop"])
+                .args([
+                    "--user",
+                    "call",
+                    "org.kde.KWin",
+                    &object_path,
+                    "org.kde.kwin.Script",
+                    "stop",
+                ])
                 .output();
             break;
         }

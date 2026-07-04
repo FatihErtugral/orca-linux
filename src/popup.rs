@@ -1,65 +1,119 @@
 //! The popover window — the Linux counterpart of the macOS `NSPopover` +
-//! `MenuView`. Left-clicking the tray icon toggles it; it hides on Esc or when
-//! it loses focus. Rendering mirrors MenuView.swift: header with counts and a
-//! gear, colored status dots, live-ticking durations, per-row dismiss, inline
-//! settings pane with the five notification toggles and an update check.
+//! `MenuView`, running as its own short-lived process (`orca popup`).
+//!
+//! Wayland does not allow hiding/showing a window (winit's `set_visible` is a
+//! no-op there), so visibility is modeled as process lifetime: the tray toggle
+//! spawns this process and terminates it. State arrives as a JSON-line stream
+//! over the daemon socket (`{"type":"subscribe"}`); user actions go back as
+//! `{"type":"action",...}` lines. Closing (Esc, focus loss, jump-to-terminal)
+//! simply exits.
 
 use crate::daemon::prefs::NotificationPreferences;
-use crate::daemon::{Msg, PrefKey};
+use crate::daemon::PrefKey;
 use crate::protocol::AgentStatus;
-use crate::version;
+use crate::socket::{self, Action};
+use crate::ui_state::{UiAgent, UiState};
+use crate::{paths, version};
 use eframe::egui;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-#[derive(Clone, Default)]
-pub struct UiState {
-    pub rows: Vec<UiAgent>,
-    pub running: usize,
-    pub open: usize,
-    pub prefs: NotificationPreferences,
-}
+pub fn run_popup() -> i32 {
+    let socket_path = paths::socket_path();
+    let Ok(mut stream) = UnixStream::connect(&socket_path) else {
+        eprintln!("orca: daemon is not running — start it with `orca tray`");
+        return 1;
+    };
+    if stream.write_all(b"{\"type\":\"subscribe\"}\n").is_err() {
+        eprintln!("orca: could not subscribe to the daemon");
+        return 1;
+    }
 
-#[derive(Clone)]
-pub struct UiAgent {
-    pub id: String,
-    pub title: String,
-    pub source: String,
-    pub status: AgentStatus,
-    pub message: Option<String>,
-    pub run_started_at: Option<f64>,
-    pub last_run_duration: f64,
-}
+    let shared = Arc::new(Shared {
+        state: Mutex::new(UiState::default()),
+        ctx: OnceLock::new(),
+    });
 
-impl UiAgent {
-    fn duration(&self, now: f64) -> f64 {
-        if self.status == AgentStatus::Running {
-            if let Some(start) = self.run_started_at {
-                return (now - start).max(0.0);
+    // State stream: one UiState JSON line per change; EOF means the daemon
+    // went away, which closes the popup.
+    let reader_shared = shared.clone();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if let Ok(state) = serde_json::from_str::<UiState>(&line) {
+                        *reader_shared.state.lock().unwrap() = state;
+                        if let Some(ctx) = reader_shared.ctx.get() {
+                            ctx.request_repaint();
+                        }
+                    }
+                }
             }
         }
-        self.last_run_duration
-    }
-}
-
-/// Bridge between the store loop (which owns the truth) and the UI thread.
-pub struct SharedUi {
-    pub state: Mutex<UiState>,
-    pub ctx: OnceLock<egui::Context>,
-    pub visible: AtomicBool,
-}
-
-impl Default for SharedUi {
-    fn default() -> Self {
-        Self {
-            state: Mutex::new(UiState::default()),
-            ctx: OnceLock::new(),
-            visible: AtomicBool::new(false),
+        if let Some(ctx) = reader_shared.ctx.get() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            ctx.request_repaint();
         }
+    });
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([340.0, 420.0])
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_always_on_top()
+            .with_transparent(true)
+            .with_app_id("orca"),
+        run_and_return: false,
+        ..Default::default()
+    };
+    let app_shared = shared.clone();
+    let result = eframe::run_native(
+        "Orca",
+        options,
+        Box::new(move |cc| {
+            // Labels must not swallow clicks (text selection), otherwise the
+            // row's click sense only fires in the gaps between texts.
+            cc.egui_ctx
+                .all_styles_mut(|style| style.interaction.selectable_labels = false);
+            let _ = app_shared.ctx.set(cc.egui_ctx.clone());
+            // Dock at the tray corner as soon as KWin has mapped the surface;
+            // retries make this robust against slow compositors.
+            std::thread::spawn(|| {
+                for delay in [30_u64, 120, 300] {
+                    std::thread::sleep(Duration::from_millis(delay));
+                    crate::daemon::focus::position_popup_bottom_right();
+                }
+            });
+            Ok(Box::new(PopupApp {
+                shared: app_shared,
+                socket_path,
+                show_settings: false,
+                was_focused: false,
+                closing: false,
+                opened_at: std::time::Instant::now(),
+                check: Arc::new(Mutex::new(CheckState::Idle)),
+            }))
+        }),
+    );
+    if result.is_err() {
+        eprintln!("orca: popup UI failed to start");
+        return 1;
     }
+    0
+}
+
+struct Shared {
+    state: Mutex<UiState>,
+    ctx: OnceLock<egui::Context>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -72,52 +126,35 @@ enum CheckState {
     Failed,
 }
 
-pub fn run(shared: Arc<SharedUi>, tx: Sender<Msg>) -> Result<(), eframe::Error> {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([340.0, 420.0])
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_always_on_top()
-            .with_visible(false)
-            .with_transparent(true)
-            .with_app_id("orca"),
-        run_and_return: true,
-        ..Default::default()
-    };
-    eframe::run_native(
-        "Orca",
-        options,
-        Box::new(move |cc| {
-            // Labels must not swallow clicks (text selection), otherwise the
-            // row's click sense only fires in the gaps between texts.
-            cc.egui_ctx
-                .all_styles_mut(|style| style.interaction.selectable_labels = false);
-            let _ = shared.ctx.set(cc.egui_ctx.clone());
-            Ok(Box::new(PopupApp {
-                shared,
-                tx,
-                show_settings: false,
-                was_focused: false,
-                check: Arc::new(Mutex::new(CheckState::Idle)),
-            }))
-        }),
-    )
-}
-
 struct PopupApp {
-    shared: Arc<SharedUi>,
-    tx: Sender<Msg>,
+    shared: Arc<Shared>,
+    socket_path: PathBuf,
     show_settings: bool,
     was_focused: bool,
+    closing: bool,
+    opened_at: std::time::Instant,
     check: Arc<Mutex<CheckState>>,
 }
 
 impl PopupApp {
-    fn hide(&mut self, ctx: &egui::Context) {
-        self.shared.visible.store(false, Ordering::Relaxed);
-        self.show_settings = false;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    fn send(&self, action: Action) {
+        socket::send_action(&self.socket_path, &action);
+    }
+
+    fn close(&mut self, ctx: &egui::Context) {
+        if self.closing {
+            return;
+        }
+        self.closing = true;
+        // Tell the daemon first so a tray click racing with this close does
+        // not instantly reopen the popup.
+        self.send(Action {
+            action: "popup_hidden".into(),
+            id: None,
+            key: None,
+            value: None,
+        });
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 }
 
@@ -128,14 +165,15 @@ impl eframe::App for PopupApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        let visible = self.shared.visible.load(Ordering::Relaxed);
-        if visible && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.hide(&ctx);
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.close(&ctx);
         }
-        // Hide like a popover: on the transition from focused to unfocused.
+        // Close like a popover: on the transition from focused to unfocused.
+        // The first moments after mapping are ignored — KWin briefly shuffles
+        // focus while placing the window, which must not read as click-away.
         let focused = ctx.input(|i| i.focused);
-        if visible && self.was_focused && !focused {
-            self.hide(&ctx);
+        if self.was_focused && !focused && self.opened_at.elapsed() > Duration::from_millis(600) {
+            self.close(&ctx);
         }
         self.was_focused = focused;
 
@@ -175,11 +213,11 @@ impl eframe::App for PopupApp {
 
         // Jumping to the terminal hands focus away, so close like a popover.
         if focus_clicked {
-            self.hide(&ctx);
+            self.close(&ctx);
         }
 
-        // Tick the durations only while someone can see them.
-        if visible && state.rows.iter().any(|r| r.status == AgentStatus::Running) {
+        // Tick the durations while any agent is running.
+        if state.rows.iter().any(|r| r.status == AgentStatus::Running) {
             ctx.request_repaint_after(Duration::from_secs(1));
         }
     }
@@ -234,7 +272,12 @@ impl PopupApp {
             );
         }
         if clicked {
-            let _ = self.tx.send(Msg::Focus(row.id.clone()));
+            self.send(Action {
+                action: "focus".into(),
+                id: Some(row.id.clone()),
+                key: None,
+                value: None,
+            });
         }
         clicked
     }
@@ -244,10 +287,7 @@ impl PopupApp {
         // center against the row (egui is single-pass; one frame of lag is
         // invisible and converges immediately).
         let height_id = egui::Id::new(("row-height", &row.id));
-        let text_height: f32 = ui
-            .ctx()
-            .data(|d| d.get_temp(height_id))
-            .unwrap_or(30.0);
+        let text_height: f32 = ui.ctx().data(|d| d.get_temp(height_id)).unwrap_or(30.0);
         ui.horizontal_top(|ui| {
             // Status dot, top-aligned like the macOS popover.
             let (rect, _) = ui.allocate_exact_size(egui::vec2(9.0, 18.0), egui::Sense::hover());
@@ -260,9 +300,7 @@ impl PopupApp {
             let text_column = ui.vertical(|ui| {
                 ui.set_width(ui.available_width() - 22.0);
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(truncated(&row.title, 34)).strong(),
-                    );
+                    ui.label(egui::RichText::new(truncated(&row.title, 34)).strong());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.weak(
                             egui::RichText::new(format_duration(row.duration(now))).monospace(),
@@ -287,7 +325,12 @@ impl PopupApp {
                 ui.allocate_ui(egui::vec2(16.0, text_height), |ui| {
                     ui.centered_and_justified(|ui| {
                         if close_button(ui).on_hover_text("Dismiss").clicked() {
-                            let _ = self.tx.send(Msg::Dismiss(row.id.clone()));
+                            self.send(Action {
+                                action: "dismiss".into(),
+                                id: Some(row.id.clone()),
+                                key: None,
+                                value: None,
+                            });
                         }
                     });
                 });
@@ -299,15 +342,50 @@ impl PopupApp {
         let mut prefs = *prefs;
         ui.add_space(4.0);
         ui.label(egui::RichText::new("Notifications").strong());
-        self.toggle(ui, "Enable notifications", prefs.enabled, PrefKey::Enabled, true, &mut prefs);
+        self.toggle(
+            ui,
+            "Enable notifications",
+            prefs.enabled,
+            PrefKey::Enabled,
+            true,
+            &mut prefs,
+        );
         ui.indent("per-status", |ui| {
-            self.toggle(ui, "Waiting for input", prefs.on_waiting, PrefKey::OnWaiting, prefs.enabled, &mut prefs);
-            self.toggle(ui, "Finished", prefs.on_done, PrefKey::OnDone, prefs.enabled, &mut prefs);
-            self.toggle(ui, "Errors", prefs.on_error, PrefKey::OnError, prefs.enabled, &mut prefs);
+            self.toggle(
+                ui,
+                "Waiting for input",
+                prefs.on_waiting,
+                PrefKey::OnWaiting,
+                prefs.enabled,
+                &mut prefs,
+            );
+            self.toggle(
+                ui,
+                "Finished",
+                prefs.on_done,
+                PrefKey::OnDone,
+                prefs.enabled,
+                &mut prefs,
+            );
+            self.toggle(
+                ui,
+                "Errors",
+                prefs.on_error,
+                PrefKey::OnError,
+                prefs.enabled,
+                &mut prefs,
+            );
         });
         ui.add_space(4.0);
         ui.label(egui::RichText::new("Sound").strong());
-        self.toggle(ui, "Play sound", prefs.sound, PrefKey::Sound, prefs.enabled, &mut prefs);
+        self.toggle(
+            ui,
+            "Play sound",
+            prefs.sound,
+            PrefKey::Sound,
+            prefs.enabled,
+            &mut prefs,
+        );
 
         ui.add_space(10.0);
         ui.horizontal(|ui| {
@@ -345,9 +423,14 @@ impl PopupApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let mut on = value;
                     if toggle_switch(ui, &mut on).changed() {
-                        let _ = self.tx.send(Msg::SetPref(key, on));
+                        self.send(Action {
+                            action: "set_pref".into(),
+                            id: None,
+                            key: Some(key.as_str().into()),
+                            value: Some(on),
+                        });
                         // Optimistic local echo so the pane reacts instantly;
-                        // the store loop pushes the canonical state right after.
+                        // the daemon streams the canonical state right after.
                         apply_local(prefs, key, on);
                         if let Ok(mut state) = self.shared.state.lock() {
                             state.prefs = *prefs;
@@ -390,6 +473,16 @@ impl PopupApp {
                 });
             }
         }
+    }
+}
+
+fn apply_local(prefs: &mut NotificationPreferences, key: PrefKey, value: bool) {
+    match key {
+        PrefKey::Enabled => prefs.enabled = value,
+        PrefKey::OnWaiting => prefs.on_waiting = value,
+        PrefKey::OnDone => prefs.on_done = value,
+        PrefKey::OnError => prefs.on_error = value,
+        PrefKey::Sound => prefs.sound = value,
     }
 }
 
@@ -440,16 +533,6 @@ fn close_button(ui: &mut egui::Ui) -> egui::Response {
             .line_segment([c + egui::vec2(r, -r), c + egui::vec2(-r, r)], stroke);
     }
     response
-}
-
-fn apply_local(prefs: &mut NotificationPreferences, key: PrefKey, value: bool) {
-    match key {
-        PrefKey::Enabled => prefs.enabled = value,
-        PrefKey::OnWaiting => prefs.on_waiting = value,
-        PrefKey::OnDone => prefs.on_done = value,
-        PrefKey::OnError => prefs.on_error = value,
-        PrefKey::Sound => prefs.sound = value,
-    }
 }
 
 fn status_color(status: AgentStatus) -> egui::Color32 {
@@ -509,18 +592,9 @@ mod tests {
     }
 
     #[test]
-    fn ui_agent_duration_ticks_only_while_running() {
-        let mut agent = UiAgent {
-            id: "a".into(),
-            title: "t".into(),
-            source: "s".into(),
-            status: AgentStatus::Running,
-            message: None,
-            run_started_at: Some(100.0),
-            last_run_duration: 7.0,
-        };
-        assert_eq!(agent.duration(105.0), 5.0);
-        agent.status = AgentStatus::Waiting;
-        assert_eq!(agent.duration(105.0), 7.0);
+    fn escapes_are_not_needed_but_truncation_is_stable() {
+        assert_eq!(truncated("short", 34), "short");
+        let long = "a".repeat(50);
+        assert!(truncated(&long, 34).ends_with('…'));
     }
 }

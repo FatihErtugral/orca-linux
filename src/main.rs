@@ -9,6 +9,7 @@ mod state_store;
 mod terminal;
 mod transcript;
 mod tray;
+mod ui_state;
 mod version;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -28,6 +29,7 @@ fn main() {
         "install-hooks" => cli::hooks::run_install(),
         "uninstall-hooks" => cli::hooks::run_uninstall(),
         "tray" | "daemon" => daemon::run(rest),
+        "popup" => popup::run_popup(),
         "update" => cli::update::run_update(rest),
         "--version" | "version" => {
             println!("orca v{VERSION}");

@@ -32,7 +32,8 @@ pub struct AgentEvent {
     pub permission_mode: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum AgentStatus {
     Running,
     Waiting,

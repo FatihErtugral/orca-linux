@@ -56,6 +56,23 @@ esac
 echo "==> Installing Claude Code hooks"
 "$BIN_DIR/orca" install-hooks
 
+# KDE: a window rule keeps the popover out of the taskbar/switcher and above
+# other windows — declarative, no runtime scripting needed for that part.
+if command -v kwriteconfig6 >/dev/null 2>&1 && ! grep -q "Orca popup" "$HOME/.config/kwinrulesrc" 2>/dev/null; then
+    echo "==> Adding KWin window rule for the popover"
+    UUID="$(cat /proc/sys/kernel/random/uuid)"
+    EXISTING="$(kreadconfig6 --file kwinrulesrc --group General --key rules 2>/dev/null || true)"
+    COUNT="$(kreadconfig6 --file kwinrulesrc --group General --key count 2>/dev/null || echo 0)"
+    for pair in "Description:Orca popup" "wmclass:orca" "wmclassmatch:1" \
+                "skiptaskbar:true" "skiptaskbarrule:2" "skipswitcher:true" "skipswitcherrule:2" \
+                "skippager:true" "skippagerrule:2" "above:true" "aboverule:2"; do
+        kwriteconfig6 --file kwinrulesrc --group "$UUID" --key "${pair%%:*}" "${pair#*:}"
+    done
+    kwriteconfig6 --file kwinrulesrc --group General --key count $(( ${COUNT:-0} + 1 ))
+    kwriteconfig6 --file kwinrulesrc --group General --key rules "${EXISTING:+$EXISTING,}$UUID"
+    busctl --user call org.kde.KWin /KWin org.kde.KWin reconfigure >/dev/null 2>&1 || true
+fi
+
 if command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
     echo "==> Setting up systemd user service"
     install -Dm644 /dev/stdin "$HOME/.config/systemd/user/orca.service" <<UNIT

@@ -1,4 +1,5 @@
 use crate::protocol::AgentEvent;
+use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -8,9 +9,24 @@ use std::thread;
 /// Sends an event to the daemon. Fire-and-forget: if the daemon is not running
 /// the connection fails and the caller is unaffected.
 pub fn send(path: &Path, event: &AgentEvent) -> bool {
-    let Ok(mut data) = serde_json::to_vec(event) else {
+    let Ok(data) = serde_json::to_vec(event) else {
         return false;
     };
+    send_line(path, data)
+}
+
+/// Sends a popup-to-daemon control message (same NDJSON transport).
+pub fn send_action(path: &Path, action: &Action) -> bool {
+    let Ok(data) = serde_json::to_vec(&WireControl {
+        kind: "action".into(),
+        action: Some(action.clone()),
+    }) else {
+        return false;
+    };
+    send_line(path, data)
+}
+
+fn send_line(path: &Path, mut data: Vec<u8>) -> bool {
     data.push(b'\n');
     let Ok(mut stream) = UnixStream::connect(path) else {
         return false;
@@ -18,8 +34,40 @@ pub fn send(path: &Path, event: &AgentEvent) -> bool {
     stream.write_all(&data).is_ok()
 }
 
-/// Listens for newline-delimited `AgentEvent` JSON and forwards decoded events
-/// to `sink`. Returns an error if another daemon already owns the socket.
+/// Everything a client connection can deliver to the daemon.
+#[allow(clippy::large_enum_variant)] // message volume is tiny; boxing buys nothing
+pub enum Inbound {
+    /// A status event from hooks / `orca wrap` (the original wire protocol).
+    Event(AgentEvent),
+    /// A popup asked to receive UiState lines; the stream is the write half.
+    Subscribe(UnixStream),
+    /// A popup control message (dismiss / focus / set_pref / popup_hidden).
+    Action(Action),
+}
+
+#[derive(Clone, Debug, serde::Serialize, Deserialize)]
+pub struct Action {
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<bool>,
+}
+
+/// Control envelope: `{"type":"subscribe"}` or `{"type":"action",...}`.
+/// Plain `AgentEvent` lines have no `type` key, so old clients keep working.
+#[derive(serde::Serialize, Deserialize)]
+struct WireControl {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(flatten)]
+    action: Option<Action>,
+}
+
+/// Listens for newline-delimited JSON and forwards decoded messages to `sink`.
+/// Returns an error if another daemon already owns the socket.
 pub struct Server {
     listener: UnixListener,
     path: PathBuf,
@@ -52,7 +100,7 @@ impl Server {
 
     /// Accept loop; run this on a dedicated thread. Each client gets its own
     /// thread so one slow writer cannot block the rest.
-    pub fn run(&self, sink: Sender<AgentEvent>) {
+    pub fn run(&self, sink: Sender<Inbound>) {
         for stream in self.listener.incoming() {
             let Ok(stream) = stream else { continue };
             let sink = sink.clone();
@@ -66,8 +114,12 @@ impl Server {
     }
 }
 
-fn handle_client(stream: UnixStream, sink: &Sender<AgentEvent>) {
-    let mut reader = BufReader::new(stream);
+fn handle_client(stream: UnixStream, sink: &Sender<Inbound>) {
+    let reader_stream = match stream.try_clone() {
+        Ok(clone) => clone,
+        Err(_) => return,
+    };
+    let mut reader = BufReader::new(reader_stream);
     let mut buffer = Vec::new();
     loop {
         buffer.clear();
@@ -76,12 +128,40 @@ fn handle_client(stream: UnixStream, sink: &Sender<AgentEvent>) {
         match reader.read_until(b'\n', &mut buffer) {
             Ok(0) => break,
             Ok(_) => {
-                if let Ok(event) = serde_json::from_slice::<AgentEvent>(&buffer) {
-                    let _ = sink.send(event);
+                if let Some(inbound) = parse_line(&buffer, &stream) {
+                    let keep_reading = !matches!(inbound, Inbound::Subscribe(_));
+                    let _ = sink.send(inbound);
+                    if !keep_reading {
+                        // Hold the connection open for the daemon's pushes;
+                        // returning would close our clone of the socket too
+                        // early only if we dropped the read half. Keep
+                        // blocking until the peer disconnects.
+                        let mut drain = Vec::new();
+                        while matches!(reader.read_until(b'\n', &mut drain), Ok(n) if n > 0) {
+                            drain.clear();
+                        }
+                        break;
+                    }
                 }
             }
             Err(_) => break,
         }
+    }
+}
+
+fn parse_line(line: &[u8], stream: &UnixStream) -> Option<Inbound> {
+    if line.iter().all(|b| b.is_ascii_whitespace()) {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(line).ok()?;
+    match value.get("type").and_then(|t| t.as_str()) {
+        Some("subscribe") => stream.try_clone().ok().map(Inbound::Subscribe),
+        Some("action") => serde_json::from_value::<Action>(value)
+            .ok()
+            .map(Inbound::Action),
+        _ => serde_json::from_value::<AgentEvent>(value)
+            .ok()
+            .map(Inbound::Event),
     }
 }
 
@@ -96,16 +176,19 @@ mod tests {
         (dir, path)
     }
 
-    #[test]
-    fn send_returns_false_when_no_daemon() {
-        let (_dir, path) = temp_socket();
-        let event = AgentEvent {
-            id: "x".into(),
+    fn event(id: &str) -> AgentEvent {
+        AgentEvent {
+            id: id.into(),
             source: "custom".into(),
             status: "running".into(),
             ..Default::default()
-        };
-        assert!(!send(&path, &event));
+        }
+    }
+
+    #[test]
+    fn send_returns_false_when_no_daemon() {
+        let (_dir, path) = temp_socket();
+        assert!(!send(&path, &event("x")));
     }
 
     #[test]
@@ -123,8 +206,61 @@ mod tests {
         let (sink, _events) = mpsc::channel();
         let path_clone = path.clone();
         thread::spawn(move || server.run(sink));
-        // Give the accept loop a beat to start.
         thread::sleep(std::time::Duration::from_millis(50));
         assert!(Server::bind(&path_clone).is_err());
+    }
+
+    #[test]
+    fn routes_events_actions_and_subscribes() {
+        let (_dir, path) = temp_socket();
+        let server = Server::bind(&path).unwrap();
+        let (sink, inbox) = mpsc::channel();
+        thread::spawn(move || server.run(sink));
+        thread::sleep(std::time::Duration::from_millis(50));
+
+        assert!(send(&path, &event("a")));
+        assert!(send_action(
+            &path,
+            &Action {
+                action: "dismiss".into(),
+                id: Some("a".into()),
+                key: None,
+                value: None,
+            }
+        ));
+        let mut subscriber = UnixStream::connect(&path).unwrap();
+        subscriber.write_all(b"{\"type\":\"subscribe\"}\n").unwrap();
+
+        let mut got_event = false;
+        let mut got_action = false;
+        let mut got_subscribe = false;
+        for _ in 0..3 {
+            match inbox
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+            {
+                Inbound::Event(e) => {
+                    assert_eq!(e.id, "a");
+                    got_event = true;
+                }
+                Inbound::Action(a) => {
+                    assert_eq!(a.action, "dismiss");
+                    assert_eq!(a.id.as_deref(), Some("a"));
+                    got_action = true;
+                }
+                Inbound::Subscribe(mut stream) => {
+                    // The daemon can push lines back on the subscription.
+                    stream.write_all(b"{\"hello\":1}\n").unwrap();
+                    got_subscribe = true;
+                }
+            }
+        }
+        assert!(got_event && got_action && got_subscribe);
+
+        // The subscriber actually receives what the daemon writes.
+        let mut reader = BufReader::new(subscriber);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), "{\"hello\":1}");
     }
 }
