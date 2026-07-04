@@ -18,19 +18,29 @@ pub struct FocusTarget {
 }
 
 pub fn focus(target: &FocusTarget) {
-    if let Some(program) = target.term_program.as_deref() {
-        if program.eq_ignore_ascii_case("vscode") {
-            if let Some(cwd) = &target.cwd {
-                let _ = Command::new("xdg-open")
-                    .arg(format!("vscode://file{cwd}"))
-                    .spawn();
-                return;
-            }
+    // VS Code first re-opens the workspace via its URL scheme — that selects
+    // the right window when several are open...
+    let is_vscode = target
+        .term_program
+        .as_deref()
+        .is_some_and(|p| p.eq_ignore_ascii_case("vscode"));
+    if is_vscode {
+        if let Some(cwd) = &target.cwd {
+            let _ = Command::new("xdg-open")
+                .arg(format!("vscode://file{cwd}"))
+                .spawn();
         }
     }
+    // ...and the KWin pass unminimizes + raises, which the URL scheme alone
+    // does not do for a minimized window. The window caption is matched
+    // against the project folder so multi-window apps pick the right one.
     if let Some(pid) = target.pid {
         let chain = ancestor_chain(pid);
-        if !kwin_activate(&chain) {
+        let needle = target
+            .cwd
+            .as_deref()
+            .map(crate::cli::event_builder::basename);
+        if !kwin_activate(&chain, needle.as_deref()) {
             log::debug!("focus: no KWin window matched pid chain {chain:?}");
         }
     }
@@ -60,7 +70,7 @@ fn stat_ppid(pid: i32) -> Option<i32> {
 /// Activate the first window owned by any pid in the chain, via KWin's
 /// scripting DBus interface (the same trick kdotool uses). Covers both the
 /// KWin 5 and 6 script APIs and object paths.
-fn kwin_activate(pids: &[i32]) -> bool {
+fn kwin_activate(pids: &[i32], caption_needle: Option<&str>) -> bool {
     if pids.is_empty() {
         return false;
     }
@@ -69,17 +79,26 @@ fn kwin_activate(pids: &[i32]) -> bool {
         .map(|p| p.to_string())
         .collect::<Vec<_>>()
         .join(",");
+    let needle = caption_needle
+        .map(|n| format!("\"{}\"", n.replace('\\', "\\\\").replace('"', "\\\"")))
+        .unwrap_or_else(|| "null".into());
     let script = format!(
         r#"
 var pids = [{pid_list}];
+var needle = {needle};
 var wins = workspace.windowList ? workspace.windowList() : workspace.clientList;
-var found = null;
-for (var i = 0; i < pids.length && !found; i++) {{
+var byPid = null, byCaption = null;
+for (var i = 0; i < pids.length; i++) {{
     for (var j = 0; j < wins.length; j++) {{
-        if (wins[j].pid === pids[i]) {{ found = wins[j]; break; }}
+        var w = wins[j];
+        if (w.pid !== pids[i]) {{ continue; }}
+        if (!byPid) {{ byPid = w; }}
+        if (needle && !byCaption && w.caption && w.caption.indexOf(needle) !== -1) {{ byCaption = w; }}
     }}
 }}
+var found = byCaption || byPid;
 if (found) {{
+    found.minimized = false;
     if (workspace.activeWindow !== undefined) {{ workspace.activeWindow = found; }}
     else {{ workspace.activeClient = found; }}
 }}
@@ -99,6 +118,12 @@ var wins = workspace.windowList ? workspace.windowList() : workspace.clientList;
 for (var i = 0; i < wins.length; i++) {{
     var w = wins[i];
     if (w.pid === {pid} && w.normalWindow) {{
+        // Behave like a Plasma applet popup: no taskbar/switcher entry,
+        // stays above other windows.
+        w.skipTaskbar = true;
+        w.skipSwitcher = true;
+        w.skipPager = true;
+        w.keepAbove = true;
         var area = workspace.clientArea(KWin.PlacementArea, w);
         var g = w.frameGeometry;
         w.frameGeometry = {{

@@ -33,13 +33,37 @@ impl Notifier for DesktopNotifier {
         std::thread::spawn(move || {
             let mut notification = notify_rust::Notification::new();
             notification.appname("Orca").summary(&title).body(&body);
+            // The server's own sound handling is unreliable across desktops
+            // (Plasma ignores sound-name for unregistered apps), so keep the
+            // server silent and play the event sound ourselves.
+            notification.hint(notify_rust::Hint::SuppressSound(true));
             if sound {
-                notification.hint(notify_rust::Hint::SoundName("message-new-instant".into()));
-            } else {
-                notification.hint(notify_rust::Hint::SuppressSound(true));
+                play_notification_sound();
             }
             let _ = notification.show();
         });
+    }
+}
+
+/// Best-effort event sound via whatever player exists; freedesktop's
+/// sound theme ships on effectively every desktop install.
+fn play_notification_sound() {
+    const THEME_FILE: &str = "/usr/share/sounds/freedesktop/stereo/message.oga";
+    let attempts: [(&str, &[&str]); 3] = [
+        ("canberra-gtk-play", &["-i", "message-new-instant"]),
+        ("paplay", &[THEME_FILE]),
+        ("pw-play", &[THEME_FILE]),
+    ];
+    for (player, args) in attempts {
+        if std::process::Command::new(player)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return;
+        }
     }
 }
 

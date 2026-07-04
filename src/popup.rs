@@ -89,6 +89,10 @@ pub fn run(shared: Arc<SharedUi>, tx: Sender<Msg>) -> Result<(), eframe::Error> 
         "Orca",
         options,
         Box::new(move |cc| {
+            // Labels must not swallow clicks (text selection), otherwise the
+            // row's click sense only fires in the gaps between texts.
+            cc.egui_ctx
+                .all_styles_mut(|style| style.interaction.selectable_labels = false);
             let _ = shared.ctx.set(cc.egui_ctx.clone());
             Ok(Box::new(PopupApp {
                 shared,
@@ -201,6 +205,9 @@ impl PopupApp {
     /// Renders one agent row. Returns true when the row body was clicked
     /// (jump to the owning terminal, like the macOS popover).
     fn agent_row(&self, ui: &mut egui::Ui, row: &UiAgent, now: f64) -> bool {
+        // Reserve a background slot before the content so the hover highlight
+        // renders behind the text instead of over it.
+        let hover_bg = ui.painter().add(egui::Shape::Noop);
         let response = ui
             .scope_builder(
                 egui::UiBuilder::new()
@@ -217,6 +224,14 @@ impl PopupApp {
         let clicked = response.clicked();
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            ui.painter().set(
+                hover_bg,
+                egui::epaint::RectShape::filled(
+                    response.rect.expand2(egui::vec2(6.0, 3.0)),
+                    6.0,
+                    ui.visuals().widgets.hovered.weak_bg_fill,
+                ),
+            );
         }
         if clicked {
             let _ = self.tx.send(Msg::Focus(row.id.clone()));
@@ -225,6 +240,14 @@ impl PopupApp {
     }
 
     fn agent_row_contents(&self, ui: &mut egui::Ui, row: &UiAgent, now: f64) {
+        // Text-column height from the previous frame, so the dismiss button can
+        // center against the row (egui is single-pass; one frame of lag is
+        // invisible and converges immediately).
+        let height_id = egui::Id::new(("row-height", &row.id));
+        let text_height: f32 = ui
+            .ctx()
+            .data(|d| d.get_temp(height_id))
+            .unwrap_or(30.0);
         ui.horizontal_top(|ui| {
             // Status dot, top-aligned like the macOS popover.
             let (rect, _) = ui.allocate_exact_size(egui::vec2(9.0, 18.0), egui::Sense::hover());
@@ -234,7 +257,7 @@ impl PopupApp {
                 status_color(row.status),
             );
 
-            ui.vertical(|ui| {
+            let text_column = ui.vertical(|ui| {
                 ui.set_width(ui.available_width() - 22.0);
                 ui.horizontal(|ui| {
                     ui.label(
@@ -256,11 +279,18 @@ impl PopupApp {
                     }
                 }
             });
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(height_id, text_column.response.rect.height()));
 
+            // Dismiss button, vertically centered against the text column.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                if close_button(ui).on_hover_text("Dismiss").clicked() {
-                    let _ = self.tx.send(Msg::Dismiss(row.id.clone()));
-                }
+                ui.allocate_ui(egui::vec2(16.0, text_height), |ui| {
+                    ui.centered_and_justified(|ui| {
+                        if close_button(ui).on_hover_text("Dismiss").clicked() {
+                            let _ = self.tx.send(Msg::Dismiss(row.id.clone()));
+                        }
+                    });
+                });
             });
         });
     }
