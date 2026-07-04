@@ -45,26 +45,46 @@ impl Notifier for DesktopNotifier {
     }
 }
 
-/// Best-effort event sound via whatever player exists; freedesktop's
-/// sound theme ships on effectively every desktop install.
+/// Event sound via whatever player works; freedesktop's sound theme ships on
+/// effectively every desktop install. Players are tried in order and judged
+/// by their exit status — merely spawning proves nothing (canberra happily
+/// exits 0 without audio under a systemd service environment), so the direct
+/// file players come first. Runs on the short-lived notify thread, so
+/// blocking on `status()` is fine.
 fn play_notification_sound() {
     const THEME_FILE: &str = "/usr/share/sounds/freedesktop/stereo/message.oga";
+
+    // HDMI sinks suspend when idle and swallow the first ~half second of
+    // audio while re-waking — exactly the length of a notification sound.
+    // Prime the sink with a short burst of silence so the real sound lands
+    // on an awake device.
+    if let Ok(mut primer) = std::process::Command::new("paplay")
+        .args(["--raw", "--rate=48000", "--channels=2", "/dev/zero"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let _ = primer.kill();
+        let _ = primer.wait();
+    }
+
     let attempts: [(&str, &[&str]); 3] = [
-        ("canberra-gtk-play", &["-i", "message-new-instant"]),
         ("paplay", &[THEME_FILE]),
         ("pw-play", &[THEME_FILE]),
+        ("canberra-gtk-play", &["-i", "message-new-instant"]),
     ];
     for (player, args) in attempts {
-        if std::process::Command::new(player)
+        let status = std::process::Command::new(player)
             .args(args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .spawn()
-            .is_ok()
-        {
+            .status();
+        if matches!(status, Ok(s) if s.success()) {
             return;
         }
     }
+    log::warn!("notification sound: no player succeeded");
 }
 
 #[cfg(test)]
