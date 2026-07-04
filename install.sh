@@ -95,6 +95,13 @@ if command -v kwriteconfig6 >/dev/null 2>&1 && ! grep -q "Orca popup" "$HOME/.co
     busctl --user call org.kde.KWin /KWin org.kde.KWin reconfigure >/dev/null 2>&1 || true
 fi
 
+# App launcher entry: start Orca from KRunner / the application menu.
+if [ -f "$PLASMOID_SRC/../packaging/orca.desktop" ]; then
+    install -Dm644 "$PLASMOID_SRC/../packaging/orca.desktop" "$HOME/.local/share/applications/orca.desktop"
+    install -Dm644 "$PLASMOID_SRC/../assets/orca-launcher.png" "$HOME/.local/share/icons/hicolor/256x256/apps/orca.png" 2>/dev/null || true
+    kbuildsycoca6 >/dev/null 2>&1 || true
+fi
+
 if command -v systemctl >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
     echo "==> Setting up systemd user service"
     install -Dm644 /dev/stdin "$HOME/.config/systemd/user/orca.service" <<UNIT

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Orca
+GenericName=AI Agent Tracker
+Comment=Panel status tracker for CLI AI agents
+Exec=systemctl --user start orca.service
+Icon=orca
+Terminal=false
+Categories=Utility;System;Monitor;
+Keywords=ai;agent;claude;tray;orca;
+StartupNotify=false

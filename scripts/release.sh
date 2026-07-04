@@ -32,7 +32,10 @@ else
 fi
 
 cp -r plasmoid "$DIST/plasmoid"
-tar -C "$DIST" -czf "$DIST/orca-linux-$ARCH.tar.gz" orca plasmoid
+mkdir -p "$DIST/packaging" "$DIST/assets"
+cp packaging/orca.desktop "$DIST/packaging/"
+cp assets/orca-launcher.png "$DIST/assets/"
+tar -C "$DIST" -czf "$DIST/orca-linux-$ARCH.tar.gz" orca plasmoid packaging assets
 echo "==> Asset: $DIST/orca-linux-$ARCH.tar.gz"
 
 gh release create "$TAG" "$DIST/orca-linux-$ARCH.tar.gz" \

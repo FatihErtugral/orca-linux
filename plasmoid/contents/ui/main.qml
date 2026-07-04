@@ -7,6 +7,8 @@ import QtQuick
 import QtQuick.Layouts
 import QtWebSockets
 import org.kde.plasma.plasmoid
+import org.kde.plasma.core as PlasmaCore
+import org.kde.plasma.plasma5support as P5Support
 import org.kde.plasma.components as PC3
 import org.kde.kirigami as Kirigami
 
@@ -33,6 +35,28 @@ PlasmoidItem {
 
     switchWidth: Kirigami.Units.gridUnit * 15
     switchHeight: Kirigami.Units.gridUnit * 10
+
+    // Right-click menu on the panel widget.
+    Plasmoid.contextualActions: [
+        PlasmaCore.Action {
+            text: i18n("Start Orca daemon")
+            icon.name: "media-playback-start"
+            visible: !root.connected
+            onTriggered: shell.connectSource("systemctl --user start orca.service")
+        },
+        PlasmaCore.Action {
+            text: i18n("Quit Orca daemon")
+            icon.name: "application-exit"
+            visible: root.connected
+            onTriggered: root.act({ action: "quit" })
+        }
+    ]
+
+    P5Support.DataSource {
+        id: shell
+        engine: "executable"
+        onNewData: sourceName => disconnectSource(sourceName)
+    }
 
     WebSocket {
         id: socket
