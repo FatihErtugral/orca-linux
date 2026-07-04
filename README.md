@@ -30,21 +30,38 @@ orca wrap <cmd>  ───┼──> orca event ──> unix socket ──> orca
 
 ## Install
 
-Requires a Rust toolchain (`rustup`) and a StatusNotifierItem-capable tray
-(KDE Plasma out of the box; GNOME needs the AppIndicator extension).
+Quick install (downloads the latest release, installs hooks, sets up the
+systemd user service; falls back to a source build when no compatible binary
+exists):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/FatihErtugral/orca-linux/master/install.sh | bash
+```
+
+From source (needs `rustup`):
 
 ```sh
 make install          # cargo build --release + install to ~/.local/bin/orca
 orca install-hooks    # add Claude Code hooks to ~/.claude/settings.json
-orca tray &           # or enable the systemd user service below
+orca tray &           # or: install -Dm644 packaging/orca.service ~/.config/systemd/user/ && systemctl --user enable --now orca
 ```
 
-Autostart with systemd:
+Update later with `orca update` (checks GitHub releases, swaps the binary,
+refreshes hooks, restarts the daemon).
 
-```sh
-install -Dm644 packaging/orca.service ~/.config/systemd/user/orca.service
-systemctl --user enable --now orca.service
-```
+## Compatibility
+
+Nothing in Orca is distro-specific: paths follow the XDG spec, the tray is
+StatusNotifierItem over DBus, notifications are `org.freedesktop.Notifications`
+and the popover renders with egui (Wayland and X11). What you need:
+
+- **KDE Plasma**: works out of the box (SNI is native).
+- **GNOME**: install the *AppIndicator and KStatusNotifierItem* extension for
+  the tray icon; everything else works as-is.
+- Sway/Hyprland/etc.: any SNI tray (waybar, swaybar) shows the icon.
+- Prebuilt release binaries target glibc 2.36+ (Debian 12, Ubuntu 22.10+,
+  Fedora 37+, any Arch/openSUSE TW). Older or musl systems: `install.sh`
+  builds from source automatically.
 
 ## Connecting sources
 
@@ -101,6 +118,9 @@ make test    # unit + integration tests
 make lint    # clippy -D warnings
 RUST_LOG=debug cargo run -- tray --no-tray   # headless daemon for debugging
 ```
+
+Releases: `scripts/release.sh vX.Y.Z` builds the asset in an older-glibc
+container (via docker) and publishes the GitHub release.
 
 Roadmap (post-MVP): click-to-focus of the owning terminal (KWin/Konsole DBus,
 `vscode://` handlers), ollama polling, count badge rendered into the tray icon,
